@@ -240,9 +240,8 @@ static const uint32_t DATA_FRESH_MS = 90000;  // usage counts as "live" within t
 
 // ---- Shared ----
 static lv_image_dsc_t logo_dsc;
-// Provider corner logos — replace the animated Clawd mascot in the corner
-// slot on the usage screen, one per carousel tab (see update_corner_branding).
-static lv_image_dsc_t logo_claude_dsc;
+// Provider corner logos — swapped in for the Clawd mascot/logo when a
+// non-Claude tab is active (see update_corner_branding).
 static lv_image_dsc_t logo_codex_dsc;
 static lv_image_dsc_t logo_antigravity_dsc;
 static lv_obj_t* provider_logo_img = nullptr;
@@ -598,9 +597,8 @@ void ui_init(void) {
 #endif
     }
 
-    // Provider corner logos, one per carousel tab — see update_corner_branding.
-    // Reuses the same corner slot the animated mascot used to occupy.
-    init_icon_dsc_rgb565a8(&logo_claude_dsc, ICON_CLAUDE_W, ICON_CLAUDE_H, icon_claude_data);
+    // Provider corner logos (Codex/Antigravity), hidden until their tab is
+    // active — see update_corner_branding. Reuses the same corner slot.
     init_icon_dsc_rgb565a8(&logo_codex_dsc, ICON_CODEX_W, ICON_CODEX_H, icon_codex_data);
     init_icon_dsc_rgb565a8(&logo_antigravity_dsc, ICON_ANTIGRAVITY_W, ICON_ANTIGRAVITY_H, icon_antigravity_data);
     provider_logo_img = lv_image_create(scr);
@@ -715,27 +713,25 @@ static void update_view_state(void) {
                       LV_OBJ_FLAG_HIDDEN);
 }
 
-// Sets the corner slot to the active tab's provider logo (Claude/Codex/
-// Antigravity) on the usage screen; hidden on the splash screen, which has
-// its own full-size character. Idempotent — safe to call on every screen
-// change and every provider switch.
+// Swaps the corner slot between the Claude mascot/logo and a provider logo,
+// based on which carousel tab is active. Idempotent — safe to call on every
+// screen change and every provider switch so the two brandings never overlap.
 static void update_corner_branding(void) {
     if (!provider_logo_img) return;
-    bool on_usage = (current_screen != SCREEN_SPLASH);
-    if (on_usage) {
-        const lv_image_dsc_t* dsc = &logo_claude_dsc;
-        if (active_provider == PROVIDER_CODEX) dsc = &logo_codex_dsc;
-        else if (active_provider == PROVIDER_ANTIGRAVITY) dsc = &logo_antigravity_dsc;
-        lv_image_set_src(provider_logo_img, dsc);
+    bool show_provider = (current_screen != SCREEN_SPLASH) && (active_provider != PROVIDER_CLAUDE);
+    if (show_provider) {
+        lv_image_set_src(provider_logo_img,
+            active_provider == PROVIDER_CODEX ? &logo_codex_dsc : &logo_antigravity_dsc);
         lv_obj_clear_flag(provider_logo_img, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_obj_add_flag(provider_logo_img, LV_OBJ_FLAG_HIDDEN);
     }
-    // The animated corner mascot is fully superseded by the static provider
-    // logos above — every tab, including Claude, now shows a static logo.
-    splash_mascot_set_visible(false);
+    splash_mascot_set_visible(current_screen != SCREEN_SPLASH && !show_provider);
 #ifndef BOARD_HAS_PSRAM
-    if (logo_img) lv_obj_add_flag(logo_img, LV_OBJ_FLAG_HIDDEN);
+    if (logo_img) {
+        if (current_screen == SCREEN_SPLASH || show_provider) lv_obj_add_flag(logo_img, LV_OBJ_FLAG_HIDDEN);
+        else                                                   lv_obj_clear_flag(logo_img, LV_OBJ_FLAG_HIDDEN);
+    }
 #endif
 }
 
