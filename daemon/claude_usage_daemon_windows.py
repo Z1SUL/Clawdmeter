@@ -315,6 +315,134 @@ async def poll_codex() -> dict:
     return payload
 
 
+# Antigravity CLI has no documented usage API or credential store of its own
+# (confirmed by inspection: ~/.antigravity/ doesn't exist, and its actual data
+# dir ~/.gemini/antigravity-cli/ holds logs/cache/history but no separate auth
+# file). It shares ~/.gemini/oauth_creds.json with the Gemini CLI — same
+# account, same Google Cloud Code Assist backend. So this polls the same
+# quota endpoint Gemini CLI itself uses.
+#
+# Unlike the Claude/Codex providers, this DOES refresh the token itself:
+# Google access tokens here expire in ~1h, far short of a typical gap between
+# Antigravity CLI sessions, so a pure free-ride read would show "no data" most
+# of the time. The OAuth client id/secret below are the public "installed
+# app" credentials bundled in every gemini-cli (and by extension
+# antigravity-cli) install — extracted from the locally installed
+# @google/gemini-cli npm package's bundle, the same one PocketMeter's
+# GeminiProvider sources them from. Refreshing and writing the new
+# access_token back to the shared file is safe under normal OAuth2 refresh
+# semantics (the refresh_token itself isn't consumed/rotated by this).
+GEMINI_OAUTH_CREDS_FILE = Path.home() / ".gemini" / "oauth_creds.json"
+GEMINI_OAUTH_CLIENT_ID = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
+GEMINI_OAUTH_CLIENT_SECRET = "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"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+# A Google "custom method" (the colon syntax) — POST only; a plain GET 404s.
+ANTIGRAVITY_QUOTA_URL = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota"
+
+
+def _read_gemini_creds() -> dict | None:
+    try:
+        return json.loads(GEMINI_OAUTH_CREDS_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+async def _refresh_gemini_token(refresh_token: str) -> dict | None:
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            resp = await http.post(GOOGLE_TOKEN_URL, data={
+                "client_id": GEMINI_OAUTH_CLIENT_ID,
+                "client_secret": GEMINI_OAUTH_CLIENT_SECRET,
+                "refresh_token": refresh_token,
+                "grant_type": "refresh_token",
+            })
+        if resp.status_code != 200:
+            log(f"Antigravity token refresh HTTP {resp.status_code}: {resp.text[:200]}")
+            return None
+        return resp.json()
+    except httpx.HTTPError as e:
+        log(f"Antigravity token refresh failed: {e}")
+        return None
+
+
+def _iso_to_reset_mins(iso_ts: str) -> int:
+    try:
+        dt = datetime.datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
+        delta_min = (dt - datetime.datetime.now(datetime.timezone.utc)).total_seconds() / 60
+        return max(0, int(round(delta_min)))
+    except (ValueError, TypeError):
+        return 0
+
+
+async def poll_antigravity() -> dict:
+    """Poll Antigravity's usage via the Gemini CLI's shared Cloud Code Assist
+    quota endpoint. Always returns a payload (never raises).
+
+    The quota API reports per-model request-quota fractions, not a Claude-style
+    session/weekly time window — there is no Antigravity-specific "session vs
+    weekly" split to report. To fit the existing two-panel layout, the "pro"
+    model's usage fills the session slot and the plain "flash" model's usage
+    fills the weekly slot (same repurposing PocketMeter's GeminiProvider uses).
+    """
+    creds = _read_gemini_creds()
+    if not creds or not creds.get("refresh_token"):
+        return {"id": "antigravity", "ok": False}
+
+    access_token = creds.get("access_token")
+    expiry = creds.get("expiry_date", 0)
+    if not access_token or expiry <= time.time() * 1000:
+        refreshed = await _refresh_gemini_token(creds["refresh_token"])
+        if not refreshed or not refreshed.get("access_token"):
+            return {"id": "antigravity", "ok": False}
+        access_token = refreshed["access_token"]
+        # Persist so the next poll (and the CLI itself) sees the fresh token.
+        creds["access_token"] = access_token
+        if "expires_in" in refreshed:
+            creds["expiry_date"] = int(time.time() * 1000 + refreshed["expires_in"] * 1000)
+        try:
+            GEMINI_OAUTH_CREDS_FILE.write_text(json.dumps(creds, indent=2))
+        except OSError as e:
+            log(f"Could not persist refreshed Antigravity token: {e}")
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as http:
+            resp = await http.post(
+                ANTIGRAVITY_QUOTA_URL,
+                headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+                json={},
+            )
+        if resp.status_code != 200:
+            log(f"Antigravity quota API HTTP {resp.status_code}: {resp.text[:200]}")
+            return {"id": "antigravity", "ok": False}
+        data = resp.json()
+    except (httpx.HTTPError, ValueError) as e:
+        log(f"Antigravity quota API call failed: {e}")
+        return {"id": "antigravity", "ok": False}
+
+    session_pct = weekly_pct = 0.0
+    session_reset = weekly_reset = -1
+    for bucket in data.get("buckets", []):
+        model_id = bucket.get("modelId", "").lower()
+        pct_used = round((1 - bucket.get("remainingFraction", 1)) * 100, 1)
+        reset_mins = _iso_to_reset_mins(bucket.get("resetTime", ""))
+        if "pro" in model_id:
+            session_pct, session_reset = pct_used, reset_mins
+        elif "flash" in model_id and "lite" not in model_id:
+            weekly_pct, weekly_reset = pct_used, reset_mins
+
+    payload = {
+        "id": "antigravity",
+        "s": session_pct,
+        "sr": session_reset,
+        "w": weekly_pct,
+        "wr": weekly_reset,
+        "st": "allowed",
+        "ok": True,
+    }
+    log(f"Antigravity fetch OK: s={payload['s']}% w={payload['w']}%")
+    return payload
+
+
 def _billing_period_info(now: float, reset_ts: str) -> dict:
     """Fraction of billing period elapsed (tp, 0-100) and period length in days (pd).
 
@@ -652,8 +780,9 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
     session = Session(client)
     await session.setup_refresh_subscription()
 
-    last_poll = 0.0        # D-03: poll immediately on first connect
-    last_codex_poll = 0.0  # independent timer — Codex polls on the same cadence but never blocks Claude's
+    last_poll = 0.0              # D-03: poll immediately on first connect
+    last_codex_poll = 0.0        # independent timer — Codex polls on the same cadence but never blocks Claude's
+    last_antigravity_poll = 0.0  # independent timer — same cadence, never blocks the other two
     used_successfully = False
     consecutive_failures = 0  # D-03: zombie-link break counter
 
@@ -740,6 +869,15 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
                 codex_payload = await poll_codex()
                 if await session.write_payload(codex_payload):
                     last_codex_poll = time.time()
+                    consecutive_failures = 0  # D-03: healthy link
+                elif note_write_failure():
+                    break
+
+            # Antigravity — same independent-timer pattern as Codex above.
+            if now - last_antigravity_poll >= POLL_INTERVAL:
+                antigravity_payload = await poll_antigravity()
+                if await session.write_payload(antigravity_payload):
+                    last_antigravity_poll = time.time()
                     consecutive_failures = 0  # D-03: healthy link
                 elif note_write_failure():
                     break
