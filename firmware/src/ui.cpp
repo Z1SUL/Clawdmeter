@@ -227,9 +227,14 @@ static lv_image_dsc_t battery_dscs[5];  // empty, low, medium, full, charging
 // connected but no usage update landed within DATA_FRESH_MS, the pairing hint
 // when BLE is down. Re-evaluated every loop in ui_tick_anim().
 static lv_obj_t* idle_group;            // the "Zzz" idle screen
-static uint32_t  last_data_ms = 0;      // lv_tick when the last valid usage update landed
-static bool      data_received = false; // any valid update since boot
-static bool      data_ok = true;        // last payload's ok flag; a {"ok":false} beat = "no fresh data"
+// Per-provider freshness bookkeeping — the carousel shares one set of panel
+// widgets across all providers, but each provider's "is this live?" state is
+// independent (e.g. Codex may be stale while Claude is flowing).
+static uint32_t  last_data_ms[PROVIDER_COUNT] = {};      // lv_tick of last valid update, per provider
+static bool      data_received[PROVIDER_COUNT] = {};     // any valid update since boot, per provider
+static bool      data_ok_flag[PROVIDER_COUNT] = {};      // last payload's ok flag; a {"ok":false} beat = "no fresh data"
+static provider_state_t provider_cache[PROVIDER_COUNT] = {};  // last-rendered data per provider (for redraw on tab switch)
+static int       active_provider = PROVIDER_CLAUDE;       // which slot the panels currently show
 static int       view_state = -1;       // -1 unknown / 0 pair / 1 idle / 2 usage
 static const uint32_t DATA_FRESH_MS = 90000;  // usage counts as "live" within this window (daemon sends ~60s)
 
@@ -311,8 +316,9 @@ static void format_reset_time(int mins, char* buf, size_t len) {
     }
 }
 
-// Forward decls — callbacks defined near ui_show_screen below
+// Forward decls — callbacks defined near ui_show_screen / ui_update_provider below
 static void global_click_cb(lv_event_t* e);
+static void provider_tap_cb(lv_event_t* e);
 
 static lv_obj_t* make_panel(lv_obj_t* parent, int x, int y, int w, int h) {
     lv_obj_t* panel = lv_obj_create(parent);
@@ -501,6 +507,7 @@ static void init_usage_screen(lv_obj_t* scr) {
     panel_session = make_usage_panel(usage_group, L.content_y, "Current",
                      &lbl_session_pct, &lbl_session_label,
                      &bar_session, &lbl_session_reset);
+    lv_obj_add_event_cb(panel_session, provider_tap_cb, LV_EVENT_CLICKED, NULL);
 
     // Enterprise-only overlays inside panel_session — hidden until enterprise data arrives
     lbl_session_pct_sym = lv_label_create(panel_session);
@@ -526,6 +533,7 @@ static void init_usage_screen(lv_obj_t* scr) {
                      L.content_y + L.usage_panel_h + L.usage_panel_gap, "Weekly",
                      &lbl_weekly_pct, &lbl_weekly_label,
                      &bar_weekly, &lbl_weekly_reset);
+    lv_obj_add_event_cb(panel_weekly, provider_tap_cb, LV_EVENT_CLICKED, NULL);
     // Recolor enabled so enterprise period box can color pace and reset separately
     lv_label_set_recolor(lbl_weekly_reset, true);
 
@@ -590,23 +598,10 @@ void ui_init(void) {
     }
 }
 
-void ui_update(const UsageData* data) {
-    if (!data->valid) return;
-    data_ok = data->ok;
-    if (!data->ok) return;          // a {"ok":false} "no data" beat → fall through to idle, keep last numbers
-    last_data_ms = lv_tick_get();   // a real usage update just landed
-    data_received = true;
-
-    if (data->clock_epoch > 0) {    // daemon supplied wall-clock time → drive the title clock
-        clock_base_epoch = data->clock_epoch;
-        clock_base_ms = last_data_ms;
-        clock_fmt = data->clock_fmt;
-    } else if (clock_base_epoch != 0) {   // clock turned off daemon-side → revert title to "Usage"
-        clock_base_epoch = 0;
-        clock_last_min = -1;
-        lv_label_set_text(lbl_title, "Usage");
-    }
-
+// Paints the usage panels from `data`. Called for a live update to the
+// on-screen provider, and when the user taps to switch which provider is
+// on screen (redrawing from that provider's cache).
+static void render_usage(const UsageData* data) {
     int s_pct = (int)(data->session_pct + 0.5f);
 
     if (data->enterprise) {
@@ -684,10 +679,11 @@ static void update_view_state(void) {
     int v;
     if (!s_ble_connected) {
         v = 0;  // pairing hint
-    } else if (data_received && data_ok && (lv_tick_get() - last_data_ms) < DATA_FRESH_MS) {
+    } else if (data_received[active_provider] && data_ok_flag[active_provider] &&
+               (lv_tick_get() - last_data_ms[active_provider]) < DATA_FRESH_MS) {
         v = 2;  // live usage
     } else {
-        v = 1;  // idle / Zzz
+        v = 1;  // idle / Zzz — also covers a provider that's never sent data ("pending")
     }
     if (v == view_state) return;
     view_state = v;
@@ -696,6 +692,71 @@ static void update_view_state(void) {
     lv_obj_add_flag(usage_group, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(v == 0 ? pair_group : v == 1 ? idle_group : usage_group,
                       LV_OBJ_FLAG_HIDDEN);
+}
+
+// Sets the title-area label for whichever provider is now on screen. Claude
+// keeps its existing behavior (plain "Usage", or the live clock once the
+// daemon sends wall-clock time — see the clock_base_epoch block in
+// ui_tick_anim); the other providers just show their name, since only the
+// Claude payload carries wall-clock data today.
+static void refresh_title_for_active_provider(void) {
+    if (active_provider == PROVIDER_CLAUDE) {
+        if (clock_base_epoch > 0) clock_last_min = -1;  // force the clock block to redraw on the next tick
+        else                      lv_label_set_text(lbl_title, "Usage");
+    } else {
+        lv_label_set_text(lbl_title, provider_display_name((provider_id_t)active_provider));
+    }
+}
+
+// Feed a freshly-parsed payload for one provider slot. A payload for the
+// provider currently on screen repaints the panels immediately; a payload
+// for a background provider is just cached for when the user taps over to it.
+void ui_update_provider(provider_id_t id, const UsageData* data) {
+    if (!data->valid) return;
+    int i = (int)id;
+    data_ok_flag[i] = data->ok;
+    if (!data->ok) {
+        // A {"ok":false} beat means "no fresh data right now" — matches the
+        // single-provider behavior this replaces: it does not update
+        // last_data_ms/data_received, so a recent good reading stays live
+        // until DATA_FRESH_MS lapses, but flips the active view to idle right
+        // away if this is the provider currently on screen.
+        if (i == active_provider) update_view_state();
+        return;
+    }
+    last_data_ms[i] = lv_tick_get();
+    data_received[i] = true;
+    provider_cache[i] = *data;
+
+    if (id == PROVIDER_CLAUDE) {  // only the Claude payload carries wall-clock time today
+        if (data->clock_epoch > 0) {
+            clock_base_epoch = data->clock_epoch;
+            clock_base_ms = last_data_ms[i];
+            clock_fmt = data->clock_fmt;
+        } else if (clock_base_epoch != 0) {
+            clock_base_epoch = 0;
+            clock_last_min = -1;
+        }
+        if (active_provider == PROVIDER_CLAUDE) refresh_title_for_active_provider();
+    }
+
+    if (i == active_provider) {
+        render_usage(&provider_cache[i]);
+        update_view_state();
+    }
+}
+
+// Tapping the usage panels cycles Claude -> Codex -> Antigravity -> Claude.
+// A tap anywhere else on the usage screen still opens the splash screen
+// (global_click_cb) — stopping bubbling here keeps the two gestures separate.
+static void provider_tap_cb(lv_event_t* e) {
+    lv_event_stop_bubbling(e);
+    active_provider = (active_provider + 1) % PROVIDER_COUNT;
+    refresh_title_for_active_provider();
+    if (data_received[active_provider] && data_ok_flag[active_provider]) {
+        render_usage(&provider_cache[active_provider]);
+    }
+    update_view_state();
 }
 
 void ui_tick_anim(void) {
@@ -707,7 +768,9 @@ void ui_tick_anim(void) {
 
     // Title clock: once the daemon has sent wall-clock time, replace "Usage" with
     // the live time, advanced locally so it ticks every minute between payloads.
-    if (clock_base_epoch > 0) {
+    // Only while Claude is the on-screen provider — the other tabs show their
+    // own name (see refresh_title_for_active_provider).
+    if (clock_base_epoch > 0 && active_provider == PROVIDER_CLAUDE) {
         time_t cur = (time_t)(clock_base_epoch + (now - clock_base_ms) / 1000);
         struct tm tmv;
         gmtime_r(&cur, &tmv);   // epoch is already local wall-clock → gmtime keeps it as-is

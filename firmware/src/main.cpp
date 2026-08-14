@@ -391,10 +391,9 @@ void loop() {
             providers[pid] = parsed;
             Serial.printf("usage update: provider=%s s=%.2f%% w=%.2f%% ok=%d\n",
                 provider_display_name(pid), parsed.session_pct, parsed.weekly_pct, parsed.ok);
-            // Session-rate tracking (chime, splash mood) and the on-screen usage
-            // view are Claude-only for now — carousel display of the other
-            // providers' slots lands in a later step. Other providers' payloads
-            // are still stored above so nothing is lost once that lands.
+            // Session-rate tracking (chime, splash mood) stays Claude-only —
+            // it drives the corner mascot and reset chime, which only make
+            // sense tied to one provider's session window.
             if (pid == PROVIDER_CLAUDE) {
                 int g_before = usage_rate_group();
                 bool session_reset = usage_rate_sample(providers[PROVIDER_CLAUDE].session_pct);
@@ -411,8 +410,10 @@ void loop() {
                         g_before, g_after, providers[PROVIDER_CLAUDE].session_pct);
                     if (splash_is_active()) splash_pick_for_current_rate();
                 }
-                ui_update(&providers[PROVIDER_CLAUDE]);
             }
+            // The usage screen is a carousel over all three provider slots —
+            // ui_update_provider only repaints if this provider is on screen.
+            ui_update_provider(pid, &providers[pid]);
             ble_send_ack();
         } else {
             ble_send_nack();

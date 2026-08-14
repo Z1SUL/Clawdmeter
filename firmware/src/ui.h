@@ -9,7 +9,10 @@ enum screen_t {
 };
 
 void ui_init(void);
-void ui_update(const UsageData* data);
+// Feed a freshly-parsed payload for one provider. Only repaints the usage
+// panels when `id` is the provider currently on screen (tapping the panels
+// cycles which one that is); off-screen providers are cached silently.
+void ui_update_provider(provider_id_t id, const UsageData* data);
 void ui_tick_anim(void);
 void ui_show_screen(screen_t screen);
 void ui_toggle_splash(void);
