@@ -472,6 +472,11 @@ static void build_idle_group(lv_obj_t* parent) {
     lv_obj_t* creature = splash_mini_create(idle_group, "cloud", L.idle_px);
     if (creature) lv_obj_align(creature, LV_ALIGN_CENTER, 0, -20);
 
+    // A provider with no data (or a stale "ok":false beat) shows this screen
+    // instead of the live panels — it needs the same tap-to-cycle gesture as
+    // the panels, or a tab that's stuck pending would trap the carousel.
+    lv_obj_add_event_cb(idle_group, provider_tap_cb, LV_EVENT_CLICKED, NULL);
+
     lv_obj_add_flag(idle_group, LV_OBJ_FLAG_HIDDEN);  // update_view_state decides
 }
 
