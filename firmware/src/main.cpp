@@ -21,7 +21,11 @@
 #include "hal/imu_hal.h"
 #include "hal/sound_hal.h"
 
-static UsageData usage = {};
+// One slot per provider (Claude/Codex/Antigravity). The daemon sends one
+// provider's update per BLE write; each lands in its own slot so the others
+// keep their last-known values. Slot 0 (Claude) is also what legacy daemons
+// without an "id" field write to, preserving pre-multi-provider behavior.
+static provider_state_t providers[PROVIDER_COUNT] = {};
 
 // ---- LVGL draw buffers (partial render mode) ----
 // PSRAM-equipped boards (S3) can comfortably hold larger strips. PSRAM-free
@@ -97,14 +101,23 @@ static void my_touch_cb(lv_indev_t* indev, lv_indev_data_t* data) {
     }
 }
 
-// Parse a JSON line into UsageData.
-static bool parse_json(const char* json, UsageData* out) {
+static provider_id_t parse_provider_id(const char* id_str) {
+    if (!id_str) return PROVIDER_CLAUDE;
+    if (strcmp(id_str, "codex") == 0) return PROVIDER_CODEX;
+    if (strcmp(id_str, "antigravity") == 0) return PROVIDER_ANTIGRAVITY;
+    return PROVIDER_CLAUDE;  // unknown/missing id -> legacy single-provider behavior
+}
+
+// Parse a JSON line into UsageData, plus which provider slot it targets.
+static bool parse_json(const char* json, UsageData* out, provider_id_t* out_id) {
     JsonDocument doc;
     DeserializationError err = deserializeJson(doc, json);
     if (err) {
         Serial.printf("JSON parse error: %s\n", err.c_str());
         return false;
     }
+
+    *out_id = parse_provider_id(doc["id"] | (const char*)nullptr);
 
     out->session_pct = doc["s"] | 0.0f;
     out->session_reset_mins = doc["sr"] | -1;
@@ -372,23 +385,34 @@ void loop() {
     check_serial_cmd();
 
     if (ble_has_data()) {
-        if (parse_json(ble_get_data(), &usage)) {
-            int g_before = usage_rate_group();
-            bool session_reset = usage_rate_sample(usage.session_pct);
-            int g_after = usage_rate_group();
-            // 5-hour session limit refilled → chime so the user knows they can
-            // use Claude again (no-op on boards without a buzzer). Gated on the
-            // daemon's opt-in `chime` config; the `buzz` serial cmd ignores it.
-            if (session_reset && usage.chime) {
-                Serial.println("session reset detected — chime");
-                sound_hal_play_reset();
+        UsageData parsed = {};
+        provider_id_t pid = PROVIDER_CLAUDE;
+        if (parse_json(ble_get_data(), &parsed, &pid)) {
+            providers[pid] = parsed;
+            Serial.printf("usage update: provider=%s s=%.2f%% w=%.2f%% ok=%d\n",
+                provider_display_name(pid), parsed.session_pct, parsed.weekly_pct, parsed.ok);
+            // Session-rate tracking (chime, splash mood) and the on-screen usage
+            // view are Claude-only for now — carousel display of the other
+            // providers' slots lands in a later step. Other providers' payloads
+            // are still stored above so nothing is lost once that lands.
+            if (pid == PROVIDER_CLAUDE) {
+                int g_before = usage_rate_group();
+                bool session_reset = usage_rate_sample(providers[PROVIDER_CLAUDE].session_pct);
+                int g_after = usage_rate_group();
+                // 5-hour session limit refilled → chime so the user knows they can
+                // use Claude again (no-op on boards without a buzzer). Gated on the
+                // daemon's opt-in `chime` config; the `buzz` serial cmd ignores it.
+                if (session_reset && providers[PROVIDER_CLAUDE].chime) {
+                    Serial.println("session reset detected — chime");
+                    sound_hal_play_reset();
+                }
+                if (g_after != g_before) {
+                    Serial.printf("usage rate: group %d -> %d (s=%.2f%%)\n",
+                        g_before, g_after, providers[PROVIDER_CLAUDE].session_pct);
+                    if (splash_is_active()) splash_pick_for_current_rate();
+                }
+                ui_update(&providers[PROVIDER_CLAUDE]);
             }
-            if (g_after != g_before) {
-                Serial.printf("usage rate: group %d -> %d (s=%.2f%%)\n",
-                    g_before, g_after, usage.session_pct);
-                if (splash_is_active()) splash_pick_for_current_rate();
-            }
-            ui_update(&usage);
             ble_send_ack();
         } else {
             ble_send_nack();
