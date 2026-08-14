@@ -496,7 +496,7 @@ static void init_usage_screen(lv_obj_t* scr) {
     lv_obj_add_event_cb(usage_container, global_click_cb, LV_EVENT_CLICKED, NULL);
 
     lbl_title = lv_label_create(usage_container);
-    lv_label_set_text(lbl_title, "Usage");
+    lv_label_set_text(lbl_title, provider_display_name(PROVIDER_CLAUDE));
     lv_obj_set_style_text_font(lbl_title, L.title_font, 0);
     lv_obj_set_style_text_color(lbl_title, COL_TEXT, 0);
     // The nudge balances the corner logo on the left; smaller on small
@@ -736,14 +736,14 @@ static void update_corner_branding(void) {
 }
 
 // Sets the title-area label for whichever provider is now on screen. Claude
-// keeps its existing behavior (plain "Usage", or the live clock once the
-// daemon sends wall-clock time — see the clock_base_epoch block in
-// ui_tick_anim); the other providers just show their name, since only the
-// Claude payload carries wall-clock data today.
+// shows its name like the other two tabs, except once the daemon opts in to
+// the live clock (see the clock_base_epoch block in ui_tick_anim), which
+// still takes over the Claude tab's title — only the Claude payload carries
+// wall-clock data today.
 static void refresh_title_for_active_provider(void) {
     if (active_provider == PROVIDER_CLAUDE) {
         if (clock_base_epoch > 0) clock_last_min = -1;  // force the clock block to redraw on the next tick
-        else                      lv_label_set_text(lbl_title, "Usage");
+        else                      lv_label_set_text(lbl_title, provider_display_name(PROVIDER_CLAUDE));
     } else {
         lv_label_set_text(lbl_title, provider_display_name((provider_id_t)active_provider));
     }
@@ -808,7 +808,7 @@ void ui_tick_anim(void) {
 
     uint32_t now = lv_tick_get();
 
-    // Title clock: once the daemon has sent wall-clock time, replace "Usage" with
+    // Title clock: once the daemon has sent wall-clock time, replace "Claude" with
     // the live time, advanced locally so it ticks every minute between payloads.
     // Only while Claude is the on-screen provider — the other tabs show their
     // own name (see refresh_title_for_active_provider).
