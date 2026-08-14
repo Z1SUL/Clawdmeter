@@ -249,6 +249,72 @@ async def poll_api(token: str) -> dict | None:
     return payload
 
 
+# Codex CLI stores its own OAuth session here — separate from Claude Code's
+# credentials, and not something this daemon ever refreshes (same free-ride
+# posture as the Claude token: only the CLI that owns a token may rotate it).
+CODEX_AUTH_FILE = Path.home() / ".codex" / "auth.json"
+CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
+
+
+def _read_codex_auth() -> dict | None:
+    try:
+        return json.loads(CODEX_AUTH_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+async def poll_codex() -> dict:
+    """Poll the Codex CLI's usage endpoint for the device's Codex slot.
+
+    Always returns a payload (never raises) — {"id":"codex","ok":False} when
+    the token is missing, expired, or the API call fails, so the device's
+    Codex tab shows "no data" instead of hanging in an ambiguous unpolled
+    state. Mirrors poll_api()'s pure free-ride stance: this never refreshes
+    the token itself, only the Codex CLI (its owner) does that.
+    """
+    auth = _read_codex_auth()
+    tokens = auth.get("tokens", {}) if isinstance(auth, dict) and isinstance(auth.get("tokens"), dict) else {}
+    access_token = tokens.get("access_token")
+    account_id = tokens.get("account_id")
+    if not access_token:
+        return {"id": "codex", "ok": False}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as http:
+            resp = await http.get(
+                CODEX_USAGE_URL,
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "ChatGPT-Account-Id": account_id or "",
+                    "User-Agent": "codex-cli",
+                    "Accept": "application/json",
+                },
+            )
+        if resp.status_code != 200:
+            log(f"Codex API HTTP {resp.status_code}: {resp.text[:200]}")
+            return {"id": "codex", "ok": False}
+        data = resp.json()
+    except (httpx.HTTPError, ValueError) as e:
+        # Network/DNS/timeout/malformed-JSON — transient, same posture as
+        # poll_api's network-failure branch. Retry next tick.
+        log(f"Codex API call failed: {e}")
+        return {"id": "codex", "ok": False}
+
+    rate_limit = data.get("rate_limit", {}) if isinstance(data, dict) else {}
+    primary = rate_limit.get("primary_window", {}) or {}
+    secondary = rate_limit.get("secondary_window", {}) or {}
+    payload = {
+        "id": "codex",
+        "s": primary.get("used_percent", 0),
+        "sr": int(primary.get("reset_after_seconds", 0) / 60),
+        "w": secondary.get("used_percent", 0),
+        "wr": int(secondary.get("reset_after_seconds", 0) / 60),
+        "st": "allowed",
+        "ok": True,
+    }
+    log(f"Codex fetch OK: s={payload['s']}% w={payload['w']}%")
+    return payload
+
+
 def _billing_period_info(now: float, reset_ts: str) -> dict:
     """Fraction of billing period elapsed (tp, 0-100) and period length in days (pd).
 
@@ -586,7 +652,8 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
     session = Session(client)
     await session.setup_refresh_subscription()
 
-    last_poll = 0.0  # D-03: poll immediately on first connect
+    last_poll = 0.0        # D-03: poll immediately on first connect
+    last_codex_poll = 0.0  # independent timer — Codex polls on the same cadence but never blocks Claude's
     used_successfully = False
     consecutive_failures = 0  # D-03: zombie-link break counter
 
@@ -665,6 +732,17 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
                     # toast "token expired" — that mislabeled a boot-time DNS blip
                     # as an auth problem (SC#5). Leave tray state unchanged; the next
                     # tick retries and set_connected() recovers it.
+
+            # Codex polls on its own POLL_INTERVAL timer, independent of Claude's
+            # refresh_requested/elapsed gate above — a slow or token-less Claude
+            # cycle must never hold back the Codex slot (and vice versa).
+            if now - last_codex_poll >= POLL_INTERVAL:
+                codex_payload = await poll_codex()
+                if await session.write_payload(codex_payload):
+                    last_codex_poll = time.time()
+                    consecutive_failures = 0  # D-03: healthy link
+                elif note_write_failure():
+                    break
 
             # Wake on a refresh request OR a stop, whichever comes first. Waking
             # promptly on stop_event is what lets the finally below run
