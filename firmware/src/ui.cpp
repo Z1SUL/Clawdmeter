@@ -240,6 +240,11 @@ static const uint32_t DATA_FRESH_MS = 90000;  // usage counts as "live" within t
 
 // ---- Shared ----
 static lv_image_dsc_t logo_dsc;
+// Provider corner logos — swapped in for the Clawd mascot/logo when a
+// non-Claude tab is active (see update_corner_branding).
+static lv_image_dsc_t logo_codex_dsc;
+static lv_image_dsc_t logo_antigravity_dsc;
+static lv_obj_t* provider_logo_img = nullptr;
 static screen_t current_screen = SCREEN_USAGE;
 static bool     s_ble_connected = false;   // cached BLE connection state
 static uint32_t connected_at_ms = 0;       // when we last entered CONNECTED ("Connected" dwell)
@@ -592,6 +597,15 @@ void ui_init(void) {
 #endif
     }
 
+    // Provider corner logos (Codex/Antigravity), hidden until their tab is
+    // active — see update_corner_branding. Reuses the same corner slot.
+    init_icon_dsc_rgb565a8(&logo_codex_dsc, ICON_CODEX_W, ICON_CODEX_H, icon_codex_data);
+    init_icon_dsc_rgb565a8(&logo_antigravity_dsc, ICON_ANTIGRAVITY_W, ICON_ANTIGRAVITY_H, icon_antigravity_data);
+    provider_logo_img = lv_image_create(scr);
+    lv_obj_set_pos(provider_logo_img, L.margin, L.logo_y);
+    if (L.small_icons) lv_image_set_scale(provider_logo_img, 160);  // 64px source -> ~40px slot (256 = 100%)
+    lv_obj_add_flag(provider_logo_img, LV_OBJ_FLAG_HIDDEN);
+
     battery_img = lv_image_create(scr);
     lv_image_set_src(battery_img, &battery_dscs[0]);
     lv_obj_set_pos(battery_img, L.scr_w - L.batt_w - L.margin, L.batt_y);
@@ -699,6 +713,28 @@ static void update_view_state(void) {
                       LV_OBJ_FLAG_HIDDEN);
 }
 
+// Swaps the corner slot between the Claude mascot/logo and a provider logo,
+// based on which carousel tab is active. Idempotent — safe to call on every
+// screen change and every provider switch so the two brandings never overlap.
+static void update_corner_branding(void) {
+    if (!provider_logo_img) return;
+    bool show_provider = (current_screen != SCREEN_SPLASH) && (active_provider != PROVIDER_CLAUDE);
+    if (show_provider) {
+        lv_image_set_src(provider_logo_img,
+            active_provider == PROVIDER_CODEX ? &logo_codex_dsc : &logo_antigravity_dsc);
+        lv_obj_clear_flag(provider_logo_img, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(provider_logo_img, LV_OBJ_FLAG_HIDDEN);
+    }
+    splash_mascot_set_visible(current_screen != SCREEN_SPLASH && !show_provider);
+#ifndef BOARD_HAS_PSRAM
+    if (logo_img) {
+        if (current_screen == SCREEN_SPLASH || show_provider) lv_obj_add_flag(logo_img, LV_OBJ_FLAG_HIDDEN);
+        else                                                   lv_obj_clear_flag(logo_img, LV_OBJ_FLAG_HIDDEN);
+    }
+#endif
+}
+
 // Sets the title-area label for whichever provider is now on screen. Claude
 // keeps its existing behavior (plain "Usage", or the live clock once the
 // daemon sends wall-clock time — see the clock_base_epoch block in
@@ -711,6 +747,7 @@ static void refresh_title_for_active_provider(void) {
     } else {
         lv_label_set_text(lbl_title, provider_display_name((provider_id_t)active_provider));
     }
+    update_corner_branding();
 }
 
 // Feed a freshly-parsed payload for one provider slot. A payload for the
@@ -847,14 +884,9 @@ void ui_show_screen(screen_t screen) {
     default: break;
     }
 
-    splash_mascot_set_visible(screen != SCREEN_SPLASH);
-    if (logo_img) {
-        if (screen == SCREEN_SPLASH) lv_obj_add_flag(logo_img, LV_OBJ_FLAG_HIDDEN);
-        else                          lv_obj_clear_flag(logo_img, LV_OBJ_FLAG_HIDDEN);
-    }
-
     if (screen != SCREEN_SPLASH) prev_non_splash_screen = screen;
     current_screen = screen;
+    update_corner_branding();  // Claude mascot/logo vs. provider logo — reads current_screen
     apply_battery_visibility();
 }
 
