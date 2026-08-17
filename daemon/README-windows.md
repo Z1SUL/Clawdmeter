@@ -149,7 +149,31 @@ Press **Ctrl+C** in the terminal. The daemon logs `Daemon stopping` and exits cl
 
 ## Tray icon, login autostart, and turnkey install
 
-### One-command install (recommended)
+### Easiest: double-click `install.bat`
+
+From the repository root (in Windows Explorer, not WSL — see the path note
+below), just **double-click `install.bat`**. It runs the same installer
+described below and leaves the window open so you can read the result. No
+PowerShell command to type or execution policy to think about. To turn off
+autostart later, double-click `uninstall.bat` (or use the tray icon's
+right-click menu — see below).
+
+**No Python needed either.** If this copy of the repository includes a
+`runtime\python\` folder, the installer uses that instead — a portable
+Python with bleak/httpx/pystray/Pillow already installed into it, so it
+works on a completely fresh Windows machine with nothing preinstalled and no
+internet access at install time. If `runtime\python\` isn't present *and*
+no system Python is on PATH either, `install.bat` says so and points you to
+python.org. (Building that `runtime\python\` folder yourself: download the
+"embeddable package" zip for your target Python version from
+https://www.python.org/ftp/python/, extract it to `runtime\python\`,
+uncomment `import site` in its `pythonXY._pth` file, bootstrap pip via
+`python.exe get-pip.py` — https://bootstrap.pypa.io/get-pip.py — then
+`python.exe -m pip install -r daemon\requirements-windows.txt` with
+`PYTHONNOUSERSITE=1` set so pip doesn't pull anything from your own
+per-user site-packages into what's supposed to be a self-contained bundle.)
+
+### One-command install (equivalent, for scripting/CI)
 
 > **Copy the repo to a native Windows path first.** Clone or copy this repository
 > to a Windows location such as `%USERPROFILE%\Clawdmeter` — **not** a WSL share
@@ -163,21 +187,26 @@ Press **Ctrl+C** in the terminal. The daemon logs `Daemon stopping` and exits cl
 > cd "$env:USERPROFILE\Clawdmeter"
 > ```
 
-Run this once from the repository root in PowerShell (a native Windows path):
+Run this once from the repository root in PowerShell (a native Windows path)
+— this is exactly what `install.bat` runs under the hood:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File install-windows.ps1
 ```
 
-The script does four things in order and logs progress at each step:
+The script does three things in order and logs progress at each step:
 
-1. Creates a Python virtual environment at `.venv`.
-2. Installs dependencies from `daemon\requirements-windows.txt` (bleak, httpx, pystray, Pillow).
-3. Registers the tray app to launch automatically at login via `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` — per-user, no admin required.
-4. Launches the tray app immediately (headless — no console window).
+1. Gets a working Python: if one is on PATH, creates a virtual environment at
+   `.venv` and installs dependencies from `daemon\requirements-windows.txt`
+   (bleak, httpx, pystray, Pillow) into it — unchanged from before. Otherwise
+   falls back to the bundled `runtime\python\` folder if this copy has one
+   (see above) — nothing to install there, it's already self-contained.
+2. Registers the tray app to launch automatically at login via `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` — per-user, no admin required.
+3. Launches the tray app immediately (headless — no console window).
 
-The script downloads nothing from the internet. It only installs the packages listed in
-the in-repo `daemon\requirements-windows.txt`.
+The script downloads nothing from the internet either way — it only installs
+packages from the in-repo `daemon\requirements-windows.txt` (system-Python
+path), or uses the already-populated `runtime\python\` folder (portable path).
 
 ### Tray icon and status
 
@@ -206,7 +235,8 @@ Right-click the tray icon for the menu:
 
 ### Disabling or removing autostart
 
-Use the tray menu toggle, or remove the registry value manually:
+Double-click `uninstall.bat`, use the tray menu's "Start at login" toggle, or
+remove the registry value manually:
 
 ```powershell
 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v Clawdmeter /f
