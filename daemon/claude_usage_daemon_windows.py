@@ -26,7 +26,7 @@ from bleak import BleakClient
 from bleak.backends.device import BLEDevice
 from bleak.exc import BleakError
 
-DEVICE_NAME = "Clawdmeter"
+DEVICE_NAME = "Clawd on ESP32"
 SERVICE_UUID = "4c41555a-4465-7669-6365-000000000001"
 RX_CHAR_UUID = "4c41555a-4465-7669-6365-000000000002"
 REQ_CHAR_UUID = "4c41555a-4465-7669-6365-000000000004"
@@ -43,9 +43,10 @@ RECONNECT_BACKOFF_CAP = 8  # D-05: fast-reconnect cap (seconds); keeps stacked r
                            # ~5–10s band per CONTEXT.md Claude's Discretion; 8 chosen as middle ground
 
 # Optional reset chime.
-# Optional clock display. 
-# Config lives under the same Clawdmeter dir as daemon.log.
-CONFIG_FILE = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "Clawdmeter" / "config"
+# Optional clock display.
+# Config lives under the same ClawdOnESP32 dir as daemon.log. (Internal
+# folder identifier stays space-free; "Clawd on ESP32" is the display name.)
+CONFIG_FILE = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "ClawdOnESP32" / "config"
 
 # Daemon-side half of the ESP32 permission gate (approve/deny AI tool calls
 # from the device). A CLI's blocking hook (see daemon/hooks/) drops a
@@ -79,11 +80,11 @@ def _build_file_logger() -> logging.Logger | None:
     """
     if sys.platform != "win32":
         return None
-    logger = logging.getLogger("clawdmeter.daemon")
+    logger = logging.getLogger("clawd_on_esp32.daemon")
     if logger.handlers:
         return logger  # idempotent across re-import (tray imports this module)
     base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-    path = base / "Clawdmeter" / "daemon.log"
+    path = base / "ClawdOnESP32" / "daemon.log"
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         handler = logging.handlers.RotatingFileHandler(
@@ -573,19 +574,19 @@ def _mac_from_pnp_instance_id(instance_id: str) -> str | None:
 
 
 def discover_bonded_address() -> str | None:
-    """Return the BLE address of the bonded Clawdmeter, or None.
+    """Return the BLE address of the bonded Clawd on ESP32, or None.
 
     A device that is paired AND connected to Windows stops advertising, so
     BleakScanner can't see it (the steady state once paired — see
     README-windows.md). WinRT can still connect to it directly by address, so
     we recover that address from the OS:
 
-    1. CLAWDMETER_BLE_ADDRESS env override (skips discovery — testing / pinning).
+    1. CLAWD_ON_ESP32_BLE_ADDRESS env override (skips discovery — testing / pinning).
     2. Windows PnP table, filtered to the device's FriendlyName.
 
     Non-Windows or any failure returns None.
     """
-    if override := os.environ.get("CLAWDMETER_BLE_ADDRESS"):
+    if override := os.environ.get("CLAWD_ON_ESP32_BLE_ADDRESS"):
         return override.strip().upper()
     if sys.platform != "win32":
         return None
@@ -612,10 +613,10 @@ def discover_bonded_address() -> str | None:
 
 
 async def acquire_target():
-    """Return a connectable handle for the Clawdmeter, or None.
+    """Return a connectable handle for the Clawd on ESP32, or None.
 
     Targets only the device bonded to THIS machine (via the PnP table /
-    CLAWDMETER_BLE_ADDRESS) — it never scans for a nearby device by name, so it
+    CLAWD_ON_ESP32_BLE_ADDRESS) — it never scans for a nearby device by name, so it
     can't grab a stranger's or the wrong nearby unit. The device must be paired
     with Windows once first (the documented setup). Returns a BLEDevice or None.
     """
@@ -884,6 +885,41 @@ def read_token() -> str | None:
     return None
 
 
+def _providers_enabled_now() -> tuple[bool, bool, bool]:
+    """Which providers actually have a credentials file on this machine.
+
+    Structural presence, not "currently valid" — a Codex token that exists
+    but is expired still counts as "enabled" (the device shows its usual
+    idle/no-data state for that tab, same as always); this is specifically
+    for a CLI the user has plainly never logged into at all, so its tab
+    doesn't sit in the carousel as permanently empty.
+    """
+    claude = any(p.exists() for p in _windows_credential_candidates())
+    codex = codex_auth_path().exists()
+    antigravity = gemini_creds_path().exists()
+    return (claude, codex, antigravity)
+
+
+_last_sent_providers_enabled: tuple[bool, bool, bool] | None = None
+
+
+async def providers_enabled_tick(session: "Session") -> None:
+    """Tell the device which providers are actually configured (see
+    _providers_enabled_now) so it can skip unused ones in its tap carousel.
+    Re-checked every loop iteration — cheap, just file-existence checks —
+    but only written to the device when the set actually changes.
+    """
+    global _last_sent_providers_enabled
+    current = _providers_enabled_now()
+    if current == _last_sent_providers_enabled:
+        return
+    claude, codex, antigravity = current
+    payload = {"type": "providers", "claude": claude, "codex": codex, "antigravity": antigravity}
+    if await session.write_payload(payload):
+        _last_sent_providers_enabled = current
+        log(f"Provider visibility sent: claude={claude} codex={codex} antigravity={antigravity}")
+
+
 def _read_expiry() -> str:
     """Return human-readable expiry from the first-hit credentials file.
 
@@ -1099,6 +1135,11 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
             # POLL_INTERVAL like the polls above): a pending approval is
             # latency-sensitive, unlike a 60s usage refresh.
             await permission_broker_tick(session)
+
+            # Provider-visibility — every loop iteration too, so a freshly
+            # bonded device gets the correct carousel within a few seconds
+            # instead of waiting a full POLL_INTERVAL.
+            await providers_enabled_tick(session)
 
             # Wake on a refresh request OR a stop, whichever comes first. Waking
             # promptly on stop_event is what lets the finally below run

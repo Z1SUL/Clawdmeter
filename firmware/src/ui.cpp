@@ -238,6 +238,7 @@ static bool      data_received[PROVIDER_COUNT] = {};     // any valid update sin
 static bool      data_ok_flag[PROVIDER_COUNT] = {};      // last payload's ok flag; a {"ok":false} beat = "no fresh data"
 static provider_state_t provider_cache[PROVIDER_COUNT] = {};  // last-rendered data per provider (for redraw on tab switch)
 static int       active_provider = PROVIDER_CLAUDE;       // which slot the panels currently show
+static bool      provider_enabled[PROVIDER_COUNT] = {true, true, true};  // ui_set_providers_enabled — all on until the daemon says otherwise
 static int       view_state = -1;       // -1 unknown / 0 pair / 1 idle / 2 usage
 static const uint32_t DATA_FRESH_MS = 90000;  // usage counts as "live" within this window (daemon sends ~60s)
 
@@ -993,12 +994,40 @@ void ui_update_provider(provider_id_t id, const UsageData* data) {
     }
 }
 
-// Tapping the usage panels cycles Claude -> Codex -> Antigravity -> Claude.
-// A tap anywhere else on the usage screen still opens the splash screen
-// (global_click_cb) — stopping bubbling here keeps the two gestures separate.
+// Scans forward from `from` for the next provider_enabled slot, wrapping
+// around. Returns `from` unchanged if nothing is enabled (stay put rather
+// than get the carousel stuck bouncing between zero valid stops).
+static int next_enabled_provider(int from) {
+    for (int step = 1; step <= PROVIDER_COUNT; step++) {
+        int i = (from + step) % PROVIDER_COUNT;
+        if (provider_enabled[i]) return i;
+    }
+    return from;
+}
+
+void ui_set_providers_enabled(bool claude, bool codex, bool antigravity) {
+    provider_enabled[PROVIDER_CLAUDE] = claude;
+    provider_enabled[PROVIDER_CODEX] = codex;
+    provider_enabled[PROVIDER_ANTIGRAVITY] = antigravity;
+    if (!provider_enabled[active_provider]) {
+        active_provider = next_enabled_provider(active_provider);
+        refresh_title_for_active_provider();
+        if (data_received[active_provider] && data_ok_flag[active_provider]) {
+            render_usage(&provider_cache[active_provider]);
+        }
+        update_view_state();
+    }
+}
+
+// Tapping the usage panels cycles through whichever providers are enabled
+// (Claude -> Codex -> Antigravity -> Claude by default; a disabled provider
+// — one the user doesn't run at all — is skipped rather than landing on a
+// permanently-empty "no data" tab). A tap anywhere else on the usage screen
+// still opens the splash screen (global_click_cb) — stopping bubbling here
+// keeps the two gestures separate.
 static void provider_tap_cb(lv_event_t* e) {
     lv_event_stop_bubbling(e);
-    active_provider = (active_provider + 1) % PROVIDER_COUNT;
+    active_provider = next_enabled_provider(active_provider);
     refresh_title_for_active_provider();
     if (data_received[active_provider] && data_ok_flag[active_provider]) {
         render_usage(&provider_cache[active_provider]);

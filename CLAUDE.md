@@ -58,7 +58,7 @@ ESP32-C6 sibling of the S3 1.8: same 368×448 SH8601 panel + FocalTech touch, di
 - Touch: **FT3168** via I2C (SDA=15, SCL=14, **INT=38, RST=9** direct GPIO, addr=0x38). Same inline FocalTech reader as the 1.8 port (no GPLv3 `Arduino_DriveBus` dependency). Coordinates verified end-to-end with the BLE reset zone.
 - PMU: AXP2101 @ 0x34 (same chip as 2.16/1.8 — `XPowersLib` reused). PWR button routes through AXP PKEY IRQs (short / long / positive), same path as the 2.16 — no IO expander.
 - IMU: QMI8658 @ 0x6B (initialized for I2C bus health; rotation logic disabled — fixed watch enclosure orientation).
-- RTC: **PCF85063** on the same I2C bus, powered through AXP2101 for retention. Not used by Clawdmeter but present for future features.
+- RTC: **PCF85063** on the same I2C bus, powered through AXP2101 for retention. Not used by Clawd on ESP32 but present for future features.
 - Audio codec: **ES8311** + ES7210 ADC on the same I2C bus. The amp path is unverified on this board, so `sound.cpp` no-ops (same posture as the C6 1.8) — the shared `chime.cpp` engine is ready to wire up once it's tested on hardware.
 - **No IO expander** despite the Waveshare wiki FAQ implying one. The schematic shows Key3/PWR wired directly to AXP2101 PWRON; touch reset and display reset are direct GPIOs. `board_init()` pulses LCD_RESET (GPIO 8) and TP_RESET (GPIO 9) before display/touch HAL init.
 - Buttons: GPIO 0 (BOOT → Space/voice-mode), AXP PKEY (PWR → cycle screens; hold-to-pair). **No third button**.
@@ -240,7 +240,7 @@ Bash daemon (`daemon/claude-usage-daemon.sh`) reads OAuth token, polls Anthropic
 
 **Discovery & resilience:**
 
-- Connects by name (`"Clawdmeter"`) on first run, caches resolved MAC at `~/.config/claude-usage-monitor/ble-address`. ESP32 BLE addresses are factory-burned per-chip, so swapping any board invalidates the cache.
+- Connects by name (`"Clawd on ESP32"`) on first run, caches resolved MAC at `~/.config/claude-usage-monitor/ble-address`. ESP32 BLE addresses are factory-burned per-chip, so swapping any board invalidates the cache.
 - On connect failure: cache is dropped AND device is removed from bluez (`bluetoothctl remove`) so the next scan won't re-pick a dead MAC. Multi-candidate scans pick `head -1` and let the failure cycle converge.
 - `POLL_INTERVAL=60`, `TICK=5`. Inner loop wakes every 5s to detect disconnects fast; polls Anthropic when 60s elapsed OR when ESP fires a refresh request.
 
@@ -260,7 +260,7 @@ answers first wins. RX carries a new tagged payload
 usage-payload shape by the `type` field so old daemons/firmware are
 unaffected); PERM_RESP carries the device's `{"rid":...,"decision":"allow"|"deny"}`
 back. The daemon relays via a flat-file broker
-(`%LOCALAPPDATA%\Clawdmeter\perm_requests\<rid>.{request,result}.json` —
+(`%LOCALAPPDATA%\ClawdOnESP32\perm_requests\<rid>.{request,result}.json` —
 `permission_broker_tick()` / `drain_requests_as_timeout()` in
 `claude_usage_daemon_windows.py`) so each CLI's hook script
 (`daemon/hooks/*_permission_hook.py`) can be a small standalone process that
@@ -270,3 +270,16 @@ Firmware side: `ui_show_permission_request()` / modal in `ui.cpp`, a
 `permtest` serial command to trigger it without a real daemon/hook in the
 loop. A timeout must never silently ALLOW (falls through to the CLI's own
 prompt where that CLI has a neutral pass-through value, denies otherwise).
+
+**Provider visibility (Windows daemon only):** a user who's only logged into
+one or two of the three CLIs doesn't see the others as permanently-empty
+carousel tabs. RX also carries `{"type":"providers","claude":bool,"codex":bool,"antigravity":bool}`,
+sent whenever `_providers_enabled_now()`'s file-existence check
+(`claude_usage_daemon_windows.py`) changes — structural presence of a
+credentials file, not "currently valid," so an expired-but-present token
+still counts as enabled. Firmware: `ui_set_providers_enabled()` in `ui.cpp`
+gates `provider_tap_cb`'s carousel via `next_enabled_provider()`; if the
+active tab itself gets disabled it jumps forward immediately. Defaults all
+three enabled until the first such message arrives, so older daemons that
+never send one see unchanged (cycle-all) behavior. Serial test commands:
+`provtest_claude_off`, `provtest_codex_off`, `provtest_reset`.

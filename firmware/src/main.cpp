@@ -189,6 +189,12 @@ static void check_serial_cmd() {
             else if (strcmp(cmd_buf, "buzz") == 0)  sound_hal_play_reset();
             else if (strcmp(cmd_buf, "permtest") == 0)
                 ui_show_permission_request(PROVIDER_CLAUDE, "test1234", "Bash", "echo hello world", 30);
+            else if (strcmp(cmd_buf, "provtest_codex_off") == 0)
+                ui_set_providers_enabled(true, false, true);
+            else if (strcmp(cmd_buf, "provtest_claude_off") == 0)
+                ui_set_providers_enabled(false, true, true);
+            else if (strcmp(cmd_buf, "provtest_reset") == 0)
+                ui_set_providers_enabled(true, true, true);
             cmd_pos = 0;
         } else if (cmd_pos < CMD_BUF_SIZE - 1) {
             cmd_buf[cmd_pos++] = c;
@@ -409,6 +415,21 @@ void loop() {
             JsonDocument doc;
             if (!deserializeJson(doc, raw)) {
                 ui_hide_permission_request(doc["rid"] | "");
+            }
+            ble_send_ack();
+        } else if (strstr(raw, "\"type\":\"providers\"") != nullptr) {
+            // Tells the device which providers the daemon actually has
+            // configured, so a user running only Claude (or only Codex, ...)
+            // doesn't see the others as permanently-empty tabs in the
+            // tap carousel. Absent keys default true (matches the daemon's
+            // own default-enabled posture) so a partial/old payload can't
+            // accidentally hide a provider it just forgot to mention.
+            JsonDocument doc;
+            if (!deserializeJson(doc, raw)) {
+                ui_set_providers_enabled(
+                    doc["claude"] | true,
+                    doc["codex"] | true,
+                    doc["antigravity"] | true);
             }
             ble_send_ack();
         } else {

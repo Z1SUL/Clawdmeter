@@ -20,6 +20,15 @@ screen_t ui_get_current_screen(void);
 void ui_update_ble_status(ble_state_t state, const char* name, const char* mac);
 void ui_update_battery(int percent, bool charging);
 
+// Which providers the daemon actually has configured (a user running only
+// Claude, or only Codex, sees the others silently skipped from the tap
+// carousel instead of a permanently-empty "no data" tab). Defaults to all
+// three enabled until the daemon's first "providers" message arrives, so
+// older daemons that never send one see unchanged (cycle-all) behavior.
+// If the currently-active tab becomes disabled, this jumps forward to the
+// next enabled one immediately.
+void ui_set_providers_enabled(bool claude, bool codex, bool antigravity);
+
 // Permission-gate overlay (see docs/porting — daemon relays a CLI's
 // PreToolUse-style approval request; the device shows Allow/Deny and BLE-
 // notifies the decision back). `rid` is an opaque request id the daemon
