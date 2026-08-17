@@ -20,6 +20,7 @@ const char* ble_get_data(void);
 void ble_send_ack(void);
 void ble_send_nack(void);
 void ble_request_refresh(void);
+void ble_send_perm_response(const char* rid, bool allow);
 
 void ble_set_battery_level(int pct);
 

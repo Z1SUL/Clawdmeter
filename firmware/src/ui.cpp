@@ -1,7 +1,10 @@
 #include "ui.h"
 #include "splash.h"
+#include "ble.h"
+#include "idle.h"
 #include <lvgl.h>
 #include <time.h>
+#include <string.h>
 #include "logo.h"
 #include "clawd_still.h"
 #include "icons.h"
@@ -249,6 +252,27 @@ static screen_t current_screen = SCREEN_USAGE;
 static bool     s_ble_connected = false;   // cached BLE connection state
 static uint32_t connected_at_ms = 0;       // when we last entered CONNECTED ("Connected" dwell)
 
+// ---- Permission-gate overlay ----
+// One pending request per provider slot (a new request for a provider that
+// already has one queued just replaces it); shown one at a time, oldest-slot-
+// first. See ui_show_permission_request/ui_hide_permission_request.
+struct PermRequest {
+    bool pending;
+    char rid[16];
+    char tool[24];
+    char desc[96];
+    int  ttl_s;
+    uint32_t shown_at_ms;  // lv_tick_get() when this became the active/displayed request
+};
+static PermRequest perm_queue[PROVIDER_COUNT] = {};
+static int perm_active = -1;  // index into perm_queue currently shown, -1 = none
+static lv_obj_t* perm_group = nullptr;
+static lv_obj_t* perm_card = nullptr;
+static lv_obj_t* lbl_perm_header = nullptr;   // recolored "<Provider> wants permission"
+static lv_obj_t* lbl_perm_tool = nullptr;
+static lv_obj_t* lbl_perm_desc = nullptr;     // styled as a soft "chip", not bare text
+static lv_obj_t* lbl_perm_countdown = nullptr;
+
 // Animation state
 static uint32_t anim_last_ms = 0;
 static uint8_t anim_spinner_idx = 0;
@@ -485,6 +509,184 @@ static void build_idle_group(lv_obj_t* parent) {
     lv_obj_add_flag(idle_group, LV_OBJ_FLAG_HIDDEN);  // update_view_state decides
 }
 
+// Advance to the next queued permission request (if any), or hide the
+// overlay if the queue is now empty. Resets the countdown for whichever
+// request becomes active.
+static void perm_activate_next(void) {
+    for (int i = 0; i < PROVIDER_COUNT; i++) {
+        if (perm_queue[i].pending) {
+            perm_active = i;
+            perm_queue[i].shown_at_ms = lv_tick_get();
+            // "#d97757 Claude# wants permission" — accent-colored provider
+            // name (matches THEME_ACCENT's hex; recolor is per-segment, see
+            // the pace_hex precedent elsewhere in this file), rest inherits
+            // the label's own COL_DIM so it stays one calm, legible line.
+            char hdr_buf[48];
+            snprintf(hdr_buf, sizeof(hdr_buf), "#d97757 %s# wants permission",
+                provider_display_name((provider_id_t)i));
+            lv_label_set_text(lbl_perm_header, hdr_buf);
+            lv_label_set_text(lbl_perm_tool, perm_queue[i].tool);
+            lv_label_set_text(lbl_perm_desc, perm_queue[i].desc);
+            lv_obj_move_foreground(perm_group);
+            lv_obj_clear_flag(perm_group, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_fade_in(perm_group, 180, 0);  // soft appear; dismissal stays instant (deliberate decision, no glitch risk)
+            idle_note_activity();
+            return;
+        }
+    }
+    perm_active = -1;
+    lv_obj_add_flag(perm_group, LV_OBJ_FLAG_HIDDEN);
+}
+
+// Sends the decision over BLE, retires the active request, and surfaces the
+// next queued one (if any). Shared by the Allow/Deny buttons, the PWR-deny
+// shortcut, and the local countdown timeout.
+static void perm_resolve(bool allow) {
+    if (perm_active < 0) return;
+    ble_send_perm_response(perm_queue[perm_active].rid, allow);
+    perm_queue[perm_active].pending = false;
+    perm_active = -1;
+    lv_obj_add_flag(perm_group, LV_OBJ_FLAG_HIDDEN);
+    perm_activate_next();
+}
+
+static void perm_allow_cb(lv_event_t* e) {
+    lv_event_stop_bubbling(e);
+    perm_resolve(true);
+}
+
+static void perm_deny_cb(lv_event_t* e) {
+    lv_event_stop_bubbling(e);
+    perm_resolve(false);
+}
+
+// Full-screen dark backdrop + a centered card with the tool/description, a
+// live countdown, and Allow/Deny touch targets. Built last in ui_init() so
+// it naturally sits on top of the splash/usage screens (both children of the
+// same `scr`); ui_show_permission_request also re-asserts foreground order
+// defensively. Deliberately touch-only — see the plan's rationale for not
+// repurposing PRIMARY/SECONDARY (HID passthrough) for this.
+static void build_permission_overlay(lv_obj_t* scr) {
+    perm_group = lv_obj_create(scr);
+    lv_obj_set_size(perm_group, L.scr_w, L.scr_h);
+    lv_obj_set_pos(perm_group, 0, 0);
+    lv_obj_set_style_bg_color(perm_group, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(perm_group, LV_OPA_80, 0);
+    lv_obj_set_style_border_width(perm_group, 0, 0);
+    lv_obj_set_style_pad_all(perm_group, 0, 0);
+    lv_obj_set_style_radius(perm_group, 0, 0);
+    lv_obj_clear_flag(perm_group, LV_OBJ_FLAG_SCROLLABLE);
+    // No click handler on the backdrop itself — a tap outside the two
+    // buttons is swallowed, not treated as a dismiss.
+
+    int card_w = L.scr_w - L.margin * 2;
+    int card_h = L.scr_h - L.margin * 4;
+    perm_card = lv_obj_create(perm_group);
+    lv_obj_set_size(perm_card, card_w, card_h);
+    lv_obj_center(perm_card);
+    lv_obj_set_style_bg_color(perm_card, COL_PANEL, 0);
+    lv_obj_set_style_bg_opa(perm_card, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(perm_card, 20, 0);  // softer than the 8px usage panels — this is a dialog, not a data tile
+    lv_obj_set_style_border_width(perm_card, 0, 0);
+    lv_obj_clear_flag(perm_card, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Two size tiers keyed off the same L.small_icons flag compute_layout()
+    // already computes (true only on the 240x240 breakpoint) — everything
+    // else (480x480, 368x448) gets the large tier. Large/prominent by
+    // design: this is a "decide now" interrupt, not a glanceable stat.
+    const lv_font_t* hdr_font  = L.small_icons ? &font_styrene_12 : &font_styrene_20;
+    const lv_font_t* tool_font = L.small_icons ? &font_styrene_20 : &font_styrene_48;
+    const lv_font_t* desc_font = L.small_icons ? &font_styrene_16 : &font_styrene_24;
+    const lv_font_t* cnt_font  = L.small_icons ? &font_styrene_12 : &font_styrene_16;
+    const lv_font_t* btn_font  = L.small_icons ? &font_styrene_16 : &font_styrene_28;
+    const int hdr_y   = L.small_icons ? 8  : 16;
+    const int tool_y  = L.small_icons ? 24 : 48;
+    const int desc_y  = L.small_icons ? 54 : 122;
+    const int cnt_off = L.small_icons ? -60 : -100;   // from card bottom
+    const int btn_margin = L.small_icons ? 10 : 16;
+    const int btn_h       = L.small_icons ? 40 : 76;
+
+    // Single recolored line ("<Provider> wants permission") instead of a
+    // generic caption — states who's asking without a whole extra row.
+    // provider_display_name() supplies the word; perm_activate_next() sets
+    // the actual text (and the accent color) per request.
+    lbl_perm_header = lv_label_create(perm_card);
+    lv_label_set_recolor(lbl_perm_header, true);
+    lv_obj_set_style_text_font(lbl_perm_header, hdr_font, 0);
+    lv_obj_set_style_text_color(lbl_perm_header, COL_DIM, 0);
+    lv_obj_align(lbl_perm_header, LV_ALIGN_TOP_MID, 0, hdr_y);
+
+    lbl_perm_tool = lv_label_create(perm_card);
+    lv_obj_set_style_text_font(lbl_perm_tool, tool_font, 0);
+    lv_obj_set_style_text_color(lbl_perm_tool, COL_TEXT, 0);
+    lv_obj_align(lbl_perm_tool, LV_ALIGN_TOP_MID, 0, tool_y);
+
+    // The description lives in its own soft "chip" (COL_BAR_BG, rounded) —
+    // same idea as the pill badges elsewhere in this file, giving the detail
+    // text a defined home instead of floating loose on the card background.
+    lbl_perm_desc = lv_label_create(perm_card);
+    lv_label_set_long_mode(lbl_perm_desc, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(lbl_perm_desc, card_w - 32);
+    lv_obj_set_style_text_font(lbl_perm_desc, desc_font, 0);
+    lv_obj_set_style_text_color(lbl_perm_desc, COL_TEXT, 0);
+    lv_obj_set_style_bg_color(lbl_perm_desc, COL_BAR_BG, 0);
+    lv_obj_set_style_bg_opa(lbl_perm_desc, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(lbl_perm_desc, 12, 0);
+    lv_obj_set_style_pad_all(lbl_perm_desc, 12, 0);
+    lv_obj_align(lbl_perm_desc, LV_ALIGN_TOP_MID, 0, desc_y);
+
+    // Countdown as a small pill badge (same look as the "Current"/"Weekly"
+    // pills on the usage screen) rather than bare floating text.
+    lbl_perm_countdown = lv_label_create(perm_card);
+    lv_obj_set_style_text_font(lbl_perm_countdown, cnt_font, 0);
+    lv_obj_set_style_text_color(lbl_perm_countdown, COL_AMBER, 0);
+    lv_obj_set_style_bg_color(lbl_perm_countdown, COL_BAR_BG, 0);
+    lv_obj_set_style_bg_opa(lbl_perm_countdown, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(lbl_perm_countdown, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_pad_left(lbl_perm_countdown, 12, 0);
+    lv_obj_set_style_pad_right(lbl_perm_countdown, 12, 0);
+    lv_obj_set_style_pad_top(lbl_perm_countdown, 4, 0);
+    lv_obj_set_style_pad_bottom(lbl_perm_countdown, 4, 0);
+    lv_obj_align(lbl_perm_countdown, LV_ALIGN_BOTTOM_MID, 0, cnt_off);
+
+    int btn_w = (card_w - btn_margin * 2 - btn_margin) / 2;
+
+    // Full-capsule buttons (LV_RADIUS_CIRCLE) — matches the pill-shaped
+    // vocabulary used everywhere else in this file instead of a harder
+    // rounded-rect.
+    lv_obj_t* btn_deny = lv_obj_create(perm_card);
+    lv_obj_set_size(btn_deny, btn_w, btn_h);
+    lv_obj_align(btn_deny, LV_ALIGN_BOTTOM_LEFT, btn_margin, -btn_margin);
+    lv_obj_set_style_bg_color(btn_deny, COL_RED, 0);
+    lv_obj_set_style_bg_opa(btn_deny, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(btn_deny, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(btn_deny, 0, 0);
+    lv_obj_clear_flag(btn_deny, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(btn_deny, perm_deny_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t* lbl_deny = lv_label_create(btn_deny);
+    lv_label_set_text(lbl_deny, "Deny");
+    lv_obj_set_style_text_font(lbl_deny, btn_font, 0);
+    lv_obj_set_style_text_color(lbl_deny, lv_color_white(), 0);
+    lv_obj_center(lbl_deny);
+
+    lv_obj_t* btn_allow = lv_obj_create(perm_card);
+    lv_obj_set_size(btn_allow, btn_w, btn_h);
+    lv_obj_align(btn_allow, LV_ALIGN_BOTTOM_RIGHT, -btn_margin, -btn_margin);
+    lv_obj_set_style_bg_color(btn_allow, COL_GREEN, 0);
+    lv_obj_set_style_bg_opa(btn_allow, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(btn_allow, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(btn_allow, 0, 0);
+    lv_obj_clear_flag(btn_allow, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(btn_allow, perm_allow_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t* lbl_allow = lv_label_create(btn_allow);
+    lv_label_set_text(lbl_allow, "Allow");
+    lv_obj_set_style_text_font(lbl_allow, btn_font, 0);
+    lv_obj_set_style_text_color(lbl_allow, lv_color_white(), 0);
+    lv_obj_center(lbl_allow);
+
+    lv_obj_add_flag(perm_group, LV_OBJ_FLAG_HIDDEN);
+}
+
 static void init_usage_screen(lv_obj_t* scr) {
     usage_container = lv_obj_create(scr);
     lv_obj_set_size(usage_container, L.scr_w, L.scr_h);
@@ -615,6 +817,9 @@ void ui_init(void) {
         lv_obj_del(battery_img);
         battery_img = nullptr;
     }
+
+    // Built last so it naturally sits on top of everything else created above.
+    build_permission_overlay(scr);
 }
 
 // Paints the usage panels from `data`. Called for a live update to the
@@ -927,4 +1132,78 @@ void ui_update_battery(int percent, bool charging) {
     }
     lv_image_set_src(battery_img, &battery_dscs[idx]);
     apply_battery_visibility();
+}
+
+bool ui_permission_pending(void) {
+    return perm_active >= 0;
+}
+
+void ui_show_permission_request(provider_id_t id, const char* rid, const char* tool, const char* desc, int ttl_s) {
+    if (!perm_group) return;
+    int slot = (int)id;
+    if (slot < 0 || slot >= PROVIDER_COUNT) return;
+
+    perm_queue[slot].pending = true;
+    strlcpy(perm_queue[slot].rid, rid, sizeof(perm_queue[slot].rid));
+    strlcpy(perm_queue[slot].tool, tool, sizeof(perm_queue[slot].tool));
+    strlcpy(perm_queue[slot].desc, desc, sizeof(perm_queue[slot].desc));
+    perm_queue[slot].ttl_s = ttl_s > 0 ? ttl_s : 60;
+
+    if (perm_active == slot) {
+        // Already showing this provider's request — refresh in place and
+        // restart its countdown rather than leaving stale text/timing up.
+        perm_queue[slot].shown_at_ms = lv_tick_get();
+        lv_label_set_text(lbl_perm_tool, tool);
+        lv_label_set_text(lbl_perm_desc, desc);
+        idle_note_activity();
+    } else if (perm_active == -1) {
+        perm_activate_next();
+    }
+    // else: another provider's request is on screen; this one surfaces via
+    // perm_activate_next() once that one resolves.
+}
+
+void ui_hide_permission_request(const char* rid) {
+    if (!perm_group) return;
+    if (perm_active >= 0 && strcmp(perm_queue[perm_active].rid, rid) == 0) {
+        // The daemon cancelled the request currently on screen (e.g. the
+        // terminal already answered it) — dismiss without sending a
+        // response; there's no decision to report back.
+        perm_queue[perm_active].pending = false;
+        perm_active = -1;
+        lv_obj_add_flag(perm_group, LV_OBJ_FLAG_HIDDEN);
+        perm_activate_next();
+        return;
+    }
+    for (int i = 0; i < PROVIDER_COUNT; i++) {
+        if (perm_queue[i].pending && strcmp(perm_queue[i].rid, rid) == 0) {
+            perm_queue[i].pending = false;  // cancelled before it ever surfaced
+            return;
+        }
+    }
+}
+
+void ui_tick_permission(void) {
+    if (perm_active < 0) return;
+    idle_note_activity();  // never let the panel dim/sleep with a decision pending
+
+    int elapsed_s = (int)((lv_tick_get() - perm_queue[perm_active].shown_at_ms) / 1000);
+    int remaining = perm_queue[perm_active].ttl_s - elapsed_s;
+    if (remaining <= 0) {
+        perm_resolve(false);  // local timeout — fail safe (the daemon has its own timeout too)
+        return;
+    }
+    static int last_shown = -1;
+    if (remaining != last_shown) {
+        last_shown = remaining;
+        char buf[32];
+        snprintf(buf, sizeof(buf), "Auto-deny in %ds", remaining);
+        lv_label_set_text(lbl_perm_countdown, buf);
+    }
+}
+
+bool ui_permission_deny_via_pwr(void) {
+    if (perm_active < 0) return false;
+    perm_resolve(false);
+    return true;
 }

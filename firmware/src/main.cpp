@@ -187,6 +187,8 @@ static void check_serial_cmd() {
             cmd_buf[cmd_pos] = '\0';
             if (strcmp(cmd_buf, "screenshot") == 0) send_screenshot();
             else if (strcmp(cmd_buf, "buzz") == 0)  sound_hal_play_reset();
+            else if (strcmp(cmd_buf, "permtest") == 0)
+                ui_show_permission_request(PROVIDER_CLAUDE, "test1234", "Bash", "echo hello world", 30);
             cmd_pos = 0;
         } else if (cmd_pos < CMD_BUF_SIZE - 1) {
             cmd_buf[cmd_pos++] = c;
@@ -302,6 +304,7 @@ void loop() {
     idle_tick();
     lv_timer_handler();
     ui_tick_anim();
+    ui_tick_permission();
     ble_tick();
     power_hal_tick();
     imu_hal_tick();
@@ -354,7 +357,13 @@ void loop() {
         }
 
         if (power_hal_pwr_pressed()) {
-            if (!idle_consume_wake_press()) {
+            if (ui_permission_pending()) {
+                // A pending request already forced the panel awake (see
+                // ui_tick_permission's idle_note_activity call) — a PWR press
+                // here means "deny", not "wake" or "cycle", so it bypasses
+                // the wake-consumption gate below entirely.
+                ui_permission_deny_via_pwr();
+            } else if (!idle_consume_wake_press()) {
                 // On splash: cycle animations. On the usage view: cycle
                 // screen brightness (single non-splash view, no more screens).
                 if (ui_get_current_screen() == SCREEN_SPLASH) splash_next();
@@ -385,38 +394,57 @@ void loop() {
     check_serial_cmd();
 
     if (ble_has_data()) {
-        UsageData parsed = {};
-        provider_id_t pid = PROVIDER_CLAUDE;
-        if (parse_json(ble_get_data(), &parsed, &pid)) {
-            providers[pid] = parsed;
-            Serial.printf("usage update: provider=%s s=%.2f%% w=%.2f%% ok=%d\n",
-                provider_display_name(pid), parsed.session_pct, parsed.weekly_pct, parsed.ok);
-            // Session-rate tracking (chime, splash mood) stays Claude-only —
-            // it drives the corner mascot and reset chime, which only make
-            // sense tied to one provider's session window.
-            if (pid == PROVIDER_CLAUDE) {
-                int g_before = usage_rate_group();
-                bool session_reset = usage_rate_sample(providers[PROVIDER_CLAUDE].session_pct);
-                int g_after = usage_rate_group();
-                // 5-hour session limit refilled → chime so the user knows they can
-                // use Claude again (no-op on boards without a buzzer). Gated on the
-                // daemon's opt-in `chime` config; the `buzz` serial cmd ignores it.
-                if (session_reset && providers[PROVIDER_CLAUDE].chime) {
-                    Serial.println("session reset detected — chime");
-                    sound_hal_play_reset();
-                }
-                if (g_after != g_before) {
-                    Serial.printf("usage rate: group %d -> %d (s=%.2f%%)\n",
-                        g_before, g_after, providers[PROVIDER_CLAUDE].session_pct);
-                    if (splash_is_active()) splash_pick_for_current_rate();
-                }
+        const char* raw = ble_get_data();
+        // Permission-gate messages use a distinct shape the usage-payload
+        // path below doesn't model. Cheap substring sniff (not a full parse)
+        // keeps the common usage-payload path exactly as it was.
+        if (strstr(raw, "\"type\":\"perm\"") != nullptr) {
+            JsonDocument doc;
+            if (!deserializeJson(doc, raw)) {
+                provider_id_t pid = parse_provider_id(doc["id"] | (const char*)nullptr);
+                ui_show_permission_request(pid, doc["rid"] | "", doc["tool"] | "", doc["desc"] | "", doc["ttl"] | 60);
             }
-            // The usage screen is a carousel over all three provider slots —
-            // ui_update_provider only repaints if this provider is on screen.
-            ui_update_provider(pid, &providers[pid]);
+            ble_send_ack();
+        } else if (strstr(raw, "\"type\":\"perm_cancel\"") != nullptr) {
+            JsonDocument doc;
+            if (!deserializeJson(doc, raw)) {
+                ui_hide_permission_request(doc["rid"] | "");
+            }
             ble_send_ack();
         } else {
-            ble_send_nack();
+            UsageData parsed = {};
+            provider_id_t pid = PROVIDER_CLAUDE;
+            if (parse_json(raw, &parsed, &pid)) {
+                providers[pid] = parsed;
+                Serial.printf("usage update: provider=%s s=%.2f%% w=%.2f%% ok=%d\n",
+                    provider_display_name(pid), parsed.session_pct, parsed.weekly_pct, parsed.ok);
+                // Session-rate tracking (chime, splash mood) stays Claude-only —
+                // it drives the corner mascot and reset chime, which only make
+                // sense tied to one provider's session window.
+                if (pid == PROVIDER_CLAUDE) {
+                    int g_before = usage_rate_group();
+                    bool session_reset = usage_rate_sample(providers[PROVIDER_CLAUDE].session_pct);
+                    int g_after = usage_rate_group();
+                    // 5-hour session limit refilled → chime so the user knows they can
+                    // use Claude again (no-op on boards without a buzzer). Gated on the
+                    // daemon's opt-in `chime` config; the `buzz` serial cmd ignores it.
+                    if (session_reset && providers[PROVIDER_CLAUDE].chime) {
+                        Serial.println("session reset detected — chime");
+                        sound_hal_play_reset();
+                    }
+                    if (g_after != g_before) {
+                        Serial.printf("usage rate: group %d -> %d (s=%.2f%%)\n",
+                            g_before, g_after, providers[PROVIDER_CLAUDE].session_pct);
+                        if (splash_is_active()) splash_pick_for_current_rate();
+                    }
+                }
+                // The usage screen is a carousel over all three provider slots —
+                // ui_update_provider only repaints if this provider is on screen.
+                ui_update_provider(pid, &providers[pid]);
+                ble_send_ack();
+            } else {
+                ble_send_nack();
+            }
         }
     }
 

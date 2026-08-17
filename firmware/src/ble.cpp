@@ -11,6 +11,7 @@
 #define RX_CHAR_UUID        "4c41555a-4465-7669-6365-000000000002"  // host writes here
 #define TX_CHAR_UUID        "4c41555a-4465-7669-6365-000000000003"  // device ack/nack notifies
 #define REQ_CHAR_UUID       "4c41555a-4465-7669-6365-000000000004"  // device-initiated refresh request
+#define PERM_RESP_CHAR_UUID "4c41555a-4465-7669-6365-000000000005"  // device-initiated permission decision
 
 #define BLE_BUF_SIZE 512
 
@@ -61,6 +62,7 @@ static NimBLECharacteristic* input_kbd = nullptr;
 static NimBLECharacteristic* tx_char = nullptr;
 static NimBLECharacteristic* rx_char = nullptr;
 static NimBLECharacteristic* req_char = nullptr;
+static NimBLECharacteristic* perm_resp_char = nullptr;
 
 static ble_state_t state = BLE_STATE_INIT;
 static bool need_advertise = false;
@@ -358,6 +360,11 @@ void ble_init(void) {
     static ReqCallbacks reqCb;
     req_char->setCallbacks(&reqCb);
 
+    perm_resp_char = svc->createCharacteristic(
+        PERM_RESP_CHAR_UUID,
+        NIMBLE_PROPERTY::NOTIFY
+    );
+
     svc->start();
     server->start();
     start_advertising();
@@ -445,6 +452,15 @@ void ble_request_refresh(void) {
         req_char->notify();
         Serial.println("BLE: refresh requested");
     }
+}
+
+void ble_send_perm_response(const char* rid, bool allow) {
+    if (state != BLE_STATE_CONNECTED || !perm_resp_char) return;
+    char buf[64];
+    snprintf(buf, sizeof(buf), "{\"rid\":\"%s\",\"decision\":\"%s\"}", rid, allow ? "allow" : "deny");
+    perm_resp_char->setValue((uint8_t*)buf, strlen(buf));
+    perm_resp_char->notify();
+    Serial.printf("BLE: perm response rid=%s decision=%s\n", rid, allow ? "allow" : "deny");
 }
 
 void ble_keyboard_press(uint8_t key, uint8_t modifier) {
