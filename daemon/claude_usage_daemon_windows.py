@@ -30,6 +30,7 @@ DEVICE_NAME = "Clawdmeter"
 SERVICE_UUID = "4c41555a-4465-7669-6365-000000000001"
 RX_CHAR_UUID = "4c41555a-4465-7669-6365-000000000002"
 REQ_CHAR_UUID = "4c41555a-4465-7669-6365-000000000004"
+PERM_RESP_CHAR_UUID = "4c41555a-4465-7669-6365-000000000005"
 
 POLL_INTERVAL = 60
 TICK = 5
@@ -45,6 +46,13 @@ RECONNECT_BACKOFF_CAP = 8  # D-05: fast-reconnect cap (seconds); keeps stacked r
 # Optional clock display. 
 # Config lives under the same Clawdmeter dir as daemon.log.
 CONFIG_FILE = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "Clawdmeter" / "config"
+
+# Daemon-side half of the ESP32 permission gate (approve/deny AI tool calls
+# from the device). A CLI's blocking hook (see daemon/hooks/) drops a
+# <rid>.request.json file here and polls for <rid>.result.json; this daemon
+# relays the request over BLE and writes back the device's decision. See
+# permission_broker_tick() / drain_requests_as_timeout().
+PERM_REQUESTS_DIR = CONFIG_FILE.parent / "perm_requests"
 
 API_URL = "https://api.anthropic.com/v1/messages"
 API_HEADERS_TEMPLATE = {
@@ -111,6 +119,51 @@ class AuthError(Exception):
     which means a TRANSIENT failure (network/DNS, timeout, rate-limit, 5xx) that
     must NOT be mislabeled as a token problem (SC#5: a boot-time `getaddrinfo
     failed` DNS blip wrongly fired the 'token expired' toast)."""
+
+def _read_config_dict() -> dict[str, str]:
+    """Parse CONFIG_FILE into a flat {key: value} dict (lower-cased keys).
+
+    Shared by the scalar readers below and by the Settings window
+    (settings_windows.py), which needs to read/write credential-path
+    overrides without disturbing chime/clock lines it doesn't know about.
+    """
+    result: dict[str, str] = {}
+    try:
+        if CONFIG_FILE.exists():
+            for line in CONFIG_FILE.read_text(encoding="utf-8").splitlines():
+                line = line.split("#", 1)[0].strip()
+                if "=" not in line:
+                    continue
+                key, val = line.split("=", 1)
+                result[key.strip().lower()] = val.strip()
+    except OSError:
+        pass
+    return result
+
+
+def _config_value(key: str) -> str | None:
+    return _read_config_dict().get(key) or None
+
+
+def write_config_overrides(updates: dict[str, str]) -> None:
+    """Merge `updates` into CONFIG_FILE, preserving every other key.
+
+    An empty-string value deletes that key (reverts it to the built-in
+    default). Used by the Settings window's Save button to persist
+    credential-path overrides alongside the existing chime/clock settings.
+    """
+    current = _read_config_dict()
+    for k, v in updates.items():
+        k = k.strip().lower()
+        v = v.strip()
+        if v:
+            current[k] = v
+        else:
+            current.pop(k, None)
+    CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    lines = [f"{k} = {v}" for k, v in current.items()]
+    CONFIG_FILE.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+
 
 def read_chime_setting() -> str:
     """Read the `chime` option from the config file. One of: off|on.
@@ -256,9 +309,16 @@ CODEX_AUTH_FILE = Path.home() / ".codex" / "auth.json"
 CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 
 
+def codex_auth_path() -> Path:
+    """CODEX_AUTH_FILE, or the Settings-window override (config key codex_auth_path)."""
+    if override := _config_value("codex_auth_path"):
+        return Path(override)
+    return CODEX_AUTH_FILE
+
+
 def _read_codex_auth() -> dict | None:
     try:
-        return json.loads(CODEX_AUTH_FILE.read_text(encoding="utf-8"))
+        return json.loads(codex_auth_path().read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
 
@@ -340,9 +400,16 @@ GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 ANTIGRAVITY_QUOTA_URL = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota"
 
 
+def gemini_creds_path() -> Path:
+    """GEMINI_OAUTH_CREDS_FILE, or the Settings-window override (config key gemini_creds_path)."""
+    if override := _config_value("gemini_creds_path"):
+        return Path(override)
+    return GEMINI_OAUTH_CREDS_FILE
+
+
 def _read_gemini_creds() -> dict | None:
     try:
-        return json.loads(GEMINI_OAUTH_CREDS_FILE.read_text(encoding="utf-8"))
+        return json.loads(gemini_creds_path().read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
 
@@ -400,7 +467,7 @@ async def poll_antigravity() -> dict:
         if "expires_in" in refreshed:
             creds["expiry_date"] = int(time.time() * 1000 + refreshed["expires_in"] * 1000)
         try:
-            GEMINI_OAUTH_CREDS_FILE.write_text(json.dumps(creds, indent=2))
+            gemini_creds_path().write_text(json.dumps(creds, indent=2))
         except OSError as e:
             log(f"Could not persist refreshed Antigravity token: {e}")
 
@@ -568,10 +635,33 @@ class Session:
     def __init__(self, client: BleakClient) -> None:
         self.client = client
         self.refresh_requested = asyncio.Event()
+        # rid -> "allow"/"deny", populated by _on_perm_response, drained by
+        # permission_broker_tick(). Device-initiated, mirrors refresh_requested.
+        self.perm_decisions: dict[str, str] = {}
 
     def _on_refresh(self, _char, _data: bytearray) -> None:
         log("Refresh requested by device")
         self.refresh_requested.set()
+
+    def _on_perm_response(self, _char, data: bytearray) -> None:
+        try:
+            msg = json.loads(bytes(data).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as e:
+            log(f"Malformed permission response: {e}")
+            return
+        rid = msg.get("rid")
+        decision = msg.get("decision")
+        if rid and decision in ("allow", "deny"):
+            self.perm_decisions[rid] = decision
+            log(f"Permission response: rid={rid} decision={decision}")
+
+    async def setup_perm_subscription(self) -> None:
+        # Optional, same degrade-gracefully posture as setup_refresh_subscription
+        # — a subscribe failure must not crash the daemon or block usage polling.
+        try:
+            await self.client.start_notify(PERM_RESP_CHAR_UUID, self._on_perm_response)
+        except (BleakError, ValueError, OSError) as e:
+            log(f"Permission-response subscription unavailable: {e}")
 
     async def setup_refresh_subscription(self) -> None:
         # The refresh subscription is optional — the 60s poll loop works without it.
@@ -600,6 +690,115 @@ class Session:
             # silent-freeze failure mode, SC#2 field report).
             log(f"Write failed: {e}")
             return False
+
+
+# ---------------------------------------------------------------------------
+# Permission-gate broker — daemon-side half of the ESP32 approve/deny feature
+# ---------------------------------------------------------------------------
+# A CLI's blocking hook (daemon/hooks/*_permission_hook.py) writes
+# <rid>.request.json here and polls for <rid>.result.json to appear. This
+# daemon relays live requests to the device over BLE (while connected) and
+# writes back whatever the device decides, or "timeout" if nothing answers
+# in time — a hook must NEVER be left waiting on a device that isn't there.
+
+_perm_inflight: dict[str, dict] = {}  # rid -> {"sent_at": float, "ttl": int}
+PERM_MAX_AGE_S = 300  # orphaned request files older than this (crashed hook, daemon restart) are dropped, not relayed
+
+
+def _perm_write_result(rid: str, decision: str) -> None:
+    """Best-effort — a write failure just means the hook's own ttl fallback
+    (falling through to the CLI's native prompt, or fail-closed deny) takes over."""
+    try:
+        (PERM_REQUESTS_DIR / f"{rid}.result.json").write_text(
+            json.dumps({"decision": decision}), encoding="utf-8"
+        )
+    except OSError as e:
+        log(f"Could not write permission result for {rid}: {e}")
+
+
+def drain_requests_as_timeout() -> None:
+    """Immediately time out every pending permission-request file. Called
+    while the device is disconnected/not found (see main()'s search-backoff
+    branch) — the connected-path counterpart is permission_broker_tick()."""
+    try:
+        request_files = list(PERM_REQUESTS_DIR.glob("*.request.json"))
+    except OSError:
+        return
+    for f in request_files:
+        rid = f.name.removesuffix(".request.json")  # f.stem only strips the last ".json"
+        _perm_write_result(rid, "timeout")
+        f.unlink(missing_ok=True)
+        _perm_inflight.pop(rid, None)
+
+
+async def permission_broker_tick(session: "Session") -> None:
+    """Relay new *.request.json files to the device and write back decisions
+    (or timeouts) as *.result.json. Called once per connect_and_run loop
+    iteration, same cadence as the Codex/Antigravity polls already there.
+    """
+    now = time.time()
+    try:
+        request_files = list(PERM_REQUESTS_DIR.glob("*.request.json"))
+    except OSError:
+        return
+
+    for f in request_files:
+        rid = f.name.removesuffix(".request.json")  # f.stem only strips the last ".json"
+        if rid in _perm_inflight:
+            continue
+        try:
+            if now - f.stat().st_mtime > PERM_MAX_AGE_S:
+                f.unlink(missing_ok=True)
+                continue
+            req = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            f.unlink(missing_ok=True)
+            continue
+
+        ttl = int(req.get("ttl") or 55)
+        payload = {
+            "type": "perm",
+            "id": req.get("provider", "claude"),
+            "rid": rid,
+            "tool": str(req.get("tool", ""))[:24],
+            "desc": str(req.get("desc", ""))[:96],
+            "ttl": ttl,
+        }
+        if await session.write_payload(payload):
+            _perm_inflight[rid] = {"sent_at": now, "ttl": ttl}
+            log(f"Permission request relayed: rid={rid} tool={payload['tool']}")
+        else:
+            _perm_write_result(rid, "timeout")
+            f.unlink(missing_ok=True)
+
+    for rid, info in list(_perm_inflight.items()):
+        decision = session.perm_decisions.pop(rid, None)
+        if decision is not None:
+            _perm_write_result(rid, decision)
+            del _perm_inflight[rid]
+            (PERM_REQUESTS_DIR / f"{rid}.request.json").unlink(missing_ok=True)
+        elif now - info["sent_at"] > info["ttl"]:
+            _perm_write_result(rid, "timeout")
+            del _perm_inflight[rid]
+            (PERM_REQUESTS_DIR / f"{rid}.request.json").unlink(missing_ok=True)
+            # Tell the device to dismiss the stale modal too, in case it's
+            # still showing (best-effort — a failed write just means it sits
+            # until its own local countdown auto-denies it).
+            await session.write_payload({"type": "perm_cancel", "rid": rid})
+
+    # Sweep orphaned result files — e.g. the hook's own terminal race (see
+    # daemon/hooks/_broker.py) resolved before the device answered, so
+    # nothing ever read the result this daemon wrote. Without this a
+    # long-running daemon slowly litters the folder with dead files.
+    try:
+        for f in PERM_REQUESTS_DIR.glob("*.result.json"):
+            rid = f.name.removesuffix(".result.json")
+            if rid in _perm_inflight:
+                continue
+            if now - f.stat().st_mtime > 120:
+                f.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _extract_access_token(blob: str) -> str | None:
@@ -641,10 +840,14 @@ def _windows_credential_candidates() -> list[Path]:
     """Return the ordered list of credential file paths to probe (first hit wins).
 
     Priority:
+    0. claude_credentials_path config-file override (Settings window)
     1. CLAUDE_CREDENTIALS_PATH env override (D-03, project-specific)
     2. CLAUDE_CONFIG_DIR env override (official Claude override)
     3. D-02 candidate list: home/.claude, LOCALAPPDATA/Claude, APPDATA/Claude
     """
+    # Priority 0: explicit path set via the Settings window
+    if override := _config_value("claude_credentials_path"):
+        return [Path(override)]
     # Priority 1: project-specific env override (D-03)
     if override := os.environ.get("CLAUDE_CREDENTIALS_PATH"):
         return [Path(override)]
@@ -660,6 +863,15 @@ def _windows_credential_candidates() -> list[Path]:
         local_appdata / "Claude" / ".credentials.json",  # fallback 2
         appdata / "Claude" / ".credentials.json",        # fallback 3
     ]
+
+
+def claude_credentials_default() -> Path:
+    """The primary default Claude credentials path, ignoring any override.
+
+    Used by the Settings window to show/reset the path field independently
+    of whatever override is currently active.
+    """
+    return Path.home() / ".claude" / ".credentials.json"
 
 
 def read_token() -> str | None:
@@ -779,6 +991,7 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
     log("Connected")
     session = Session(client)
     await session.setup_refresh_subscription()
+    await session.setup_perm_subscription()
 
     last_poll = 0.0              # D-03: poll immediately on first connect
     last_codex_poll = 0.0        # independent timer — Codex polls on the same cadence but never blocks Claude's
@@ -882,6 +1095,11 @@ async def connect_and_run(device, stop_event: asyncio.Event, tray_state=None) ->
                 elif note_write_failure():
                     break
 
+            # Permission-gate broker — every loop iteration (not gated by
+            # POLL_INTERVAL like the polls above): a pending approval is
+            # latency-sensitive, unlike a 60s usage refresh.
+            await permission_broker_tick(session)
+
             # Wake on a refresh request OR a stop, whichever comes first. Waking
             # promptly on stop_event is what lets the finally below run
             # client.disconnect() before the process exits, so the peer gets a
@@ -947,6 +1165,11 @@ async def main(tray_state=None) -> None:
     log("=== Claude Usage Tracker Daemon (BLE, Windows) ===")
     log(f"Poll interval: {POLL_INTERVAL}s")
 
+    try:
+        PERM_REQUESTS_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        log(f"Could not create permission-requests dir: {e}")
+
     # D-05: two distinct backoff regimes — slow-search (device absent) vs fast-reconnect (link dropped)
     search_backoff = 1     # caps at 60s — gentle, for a device that is genuinely absent/off
     reconnect_backoff = 1  # caps at RECONNECT_BACKOFF_CAP — fast, to clear the 120s SLA after a drop
@@ -956,6 +1179,9 @@ async def main(tray_state=None) -> None:
             # Slow-search regime: device was not found by scan — back off gently
             if tray_state:
                 tray_state.set_scanning()
+            # A hook must never wait out its full timeout for a device that
+            # isn't there — resolve any pending permission requests now.
+            drain_requests_as_timeout()
             log(f"Device not found, retrying in {search_backoff}s...")
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=search_backoff)

@@ -578,6 +578,10 @@ def test_start_notify_oserror_does_not_crash_connect_and_run():
     server is not yet ready. The optional refresh subscription must degrade
     gracefully — connect_and_run must NOT propagate the OSError and must proceed
     into the poll loop (returning normally), so the daemon never restarts (SC#3/SC#4).
+
+    connect_and_run makes two start_notify calls now (refresh + permission-
+    response subscriptions), both wrapped in the same degrade-gracefully
+    try/except — this test exercises both failing the same way.
     """
     device = _make_device()
     # stop_event set so the poll loop exits immediately after subscription setup
@@ -599,8 +603,9 @@ def test_start_notify_oserror_does_not_crash_connect_and_run():
         # Must NOT raise OSError — graceful degradation into the poll loop.
         result = _run(connect_and_run(device, stop_event))
 
-    # start_notify was actually attempted (and raised), but was swallowed.
-    assert mock_client.start_notify.call_count == 1
+    # start_notify was actually attempted (and raised) for both subscriptions
+    # (refresh + permission-response), and both were swallowed.
+    assert mock_client.start_notify.call_count == 2
     # Function returned normally instead of propagating the OSError.
     assert result is False
     # The link was cleaned up via the finally block.

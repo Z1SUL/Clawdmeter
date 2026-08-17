@@ -245,6 +245,20 @@ def main() -> None:
             daemon_thread.join(timeout=6.0)
         icon_ref.stop()
 
+    def _on_settings(_icon_ref, _item) -> None:
+        # Standalone subprocess, not an in-process Toplevel: Tkinter's mainloop
+        # and pystray's own event loop both want to own their thread, so a
+        # separate process sidesteps that fight (see settings_windows.py docstring).
+        # Base pythonw.exe — same rationale as autostart._command (venv pythonw
+        # is a redirector stub that pops a console window).
+        import subprocess
+        pythonw = os.path.join(sys.base_exec_prefix, "pythonw.exe")
+        script = os.path.join(_REPO_ROOT, "daemon", "settings_windows.py")
+        try:
+            subprocess.Popen([pythonw, script], cwd=_REPO_ROOT)
+        except OSError as e:
+            daemon_log(f"Failed to open settings window: {e}")
+
     def _on_toggle(_icon_ref, _item) -> None:
         if autostart.is_enabled():
             autostart.disable()
@@ -258,6 +272,7 @@ def main() -> None:
     icon.menu = Menu(
         # Non-clickable status header; text updates via update_menu() on state change.
         MenuItem(lambda _item: header_text(ts), None, enabled=False),
+        MenuItem("Token Settings...", _on_settings),
         # Start-at-login toggle: checked= is a CALLABLE for live query (Pitfall 6).
         MenuItem("Start at login", _on_toggle, checked=lambda _item: autostart.is_enabled()),
         MenuItem("Quit", _on_quit),

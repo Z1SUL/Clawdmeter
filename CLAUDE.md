@@ -249,3 +249,24 @@ Bash daemon (`daemon/claude-usage-daemon.sh`) reads OAuth token, polls Anthropic
 - `...0002` RX — daemon writes JSON usage payload here.
 - `...0003` TX — firmware notifies ack/nack (daemon doesn't subscribe).
 - `...0004` REQ — firmware fires `0x01` notify in `onSubscribe` if `has_received_data` is false. Daemon subscribes via `setsid bash -c "stdbuf -oL dbus-monitor … | awk …"`; awk drops a flag file the inner loop picks up. See the `feedback_dbus_monitor_pipe` memory for the three subtle gotchas (pipe buffering, busctl-exits race, `wait` blocking on pipeline jobs).
+- `...0005` PERM_RESP — firmware-initiated permission decision (see "Permission gate" below). Windows daemon subscribes via `bleak`'s `start_notify`, same pattern as REQ but carrying JSON instead of a single byte.
+
+**Permission gate (Windows daemon only):** lets Claude Code / Codex CLI /
+Antigravity CLI show a pending tool-call approval on the device and gate on
+its Allow/Deny — racing a `y`/`n` keypress in the same terminal, whichever
+answers first wins. RX carries a new tagged payload
+(`{"type":"perm","id":...,"rid":...,"tool":...,"desc":...,"ttl":...}` /
+`{"type":"perm_cancel","rid":...}`, both distinguished from the default
+usage-payload shape by the `type` field so old daemons/firmware are
+unaffected); PERM_RESP carries the device's `{"rid":...,"decision":"allow"|"deny"}`
+back. The daemon relays via a flat-file broker
+(`%LOCALAPPDATA%\Clawdmeter\perm_requests\<rid>.{request,result}.json` —
+`permission_broker_tick()` / `drain_requests_as_timeout()` in
+`claude_usage_daemon_windows.py`) so each CLI's hook script
+(`daemon/hooks/*_permission_hook.py`) can be a small standalone process that
+never imports the daemon. **Nothing here is auto-wired into any CLI's live
+config** — see `daemon/hooks/README.md` for opt-in, project-scoped setup.
+Firmware side: `ui_show_permission_request()` / modal in `ui.cpp`, a
+`permtest` serial command to trigger it without a real daemon/hook in the
+loop. A timeout must never silently ALLOW (falls through to the CLI's own
+prompt where that CLI has a neutral pass-through value, denies otherwise).
