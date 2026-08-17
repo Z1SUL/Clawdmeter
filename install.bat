@@ -3,7 +3,7 @@ setlocal
 cd /d "%~dp0"
 
 echo ==============================================
-echo   Clawdmeter - Windows Install
+echo   Clawd on ESP32 - Windows Install
 echo ==============================================
 echo.
 
@@ -34,7 +34,7 @@ echo.
 if %INSTALL_RESULT% neq 0 (
     echo [ERROR] Install failed - see the messages above for details.
 ) else (
-    echo Done. Look for the Clawdmeter icon in your notification area.
+    echo Done. Look for the Clawd on ESP32 icon in your notification area.
     echo It will now also start automatically at every login.
 )
 echo.

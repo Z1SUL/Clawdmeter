@@ -2,7 +2,7 @@
 """Claude Usage Tracker Daemon (BLE) — macOS port of claude-usage-daemon.sh.
 
 Polls Claude API rate-limit headers and writes a JSON payload to the
-ESP32 "Clawdmeter" peripheral over a custom GATT service. Uses
+"Clawd on ESP32" peripheral over a custom GATT service. Uses
 bleak (CoreBluetooth backend on macOS).
 """
 
@@ -24,7 +24,7 @@ import httpx
 from bleak import BleakClient
 from bleak.exc import BleakError
 
-DEVICE_NAME = "Clawdmeter"
+DEVICE_NAME = "Clawd on ESP32"
 SERVICE_UUID = "4c41555a-4465-7669-6365-000000000001"
 RX_CHAR_UUID = "4c41555a-4465-7669-6365-000000000002"
 REQ_CHAR_UUID = "4c41555a-4465-7669-6365-000000000004"
@@ -235,7 +235,7 @@ async def _get_cb_manager():
 
 
 async def retrieve_connected_macos(skip_addr: str | None = None):
-    """Return a BLEDevice for a system-connected 'Clawdmeter', or None.
+    """Return a BLEDevice for a system-connected 'Clawd on ESP32', or None.
 
     Two-step lookup, strongest signal first:
 
@@ -692,7 +692,7 @@ def unpair_macos() -> bool:
         return False
 
     # Each line looks like:
-    #   address: 28-84-85-55-5c-3d, ... name: "Clawdmeter", ...
+    #   address: 28-84-85-55-5c-3d, ... name: "Clawd on ESP32", ...
     addr = None
     for line in out.splitlines():
         if f'name: "{DEVICE_NAME}"' in line:

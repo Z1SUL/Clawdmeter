@@ -1,4 +1,4 @@
-# install-windows.ps1 - Clawdmeter Windows turnkey bootstrap (D-09)
+# install-windows.ps1 - Clawd on ESP32 Windows turnkey bootstrap (D-09)
 #
 # Gets a working Python (system Python if found -> venv + pip install; else
 # the in-repo portable runtime at runtime\python\, which already has every
@@ -12,7 +12,7 @@
 #   .\install-windows.ps1
 #
 # To disable autostart later: right-click the tray icon -> uncheck "Start at login"
-# Or remove manually: reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v Clawdmeter /f
+# Or remove manually: reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v ClawdOnESP32 /f
 #
 # Security: this script downloads nothing from the internet. It installs only
 # the packages listed in the in-repo daemon\requirements-windows.txt (system-
@@ -33,7 +33,7 @@ if (-not $RepoRoot) {
     $RepoRoot = (Get-Location).Path
 }
 
-Log "=== Clawdmeter Windows Install ==="
+Log "=== Clawd on ESP32 Windows Install ==="
 Log "Repository root: $RepoRoot"
 
 # ------------------------------------------------------------------
@@ -48,15 +48,15 @@ if ($RepoRoot -match '\\\\wsl(\$|\.localhost)\\') {
 Refusing to install from a WSL path:
   $RepoRoot
 
-The Clawdmeter daemon must be WSL-independent. Installing from the WSL share
+The Clawd on ESP32 daemon must be WSL-independent. Installing from the WSL share
 would make the virtual environment and login-autostart entry point at a path
 that is unreachable once WSL shuts down.
 
 Fix: copy this repository to a native Windows location and run the installer
 there, e.g.
 
-  Copy-Item -Recurse '$RepoRoot' "$env:USERPROFILE\Clawdmeter"
-  cd "$env:USERPROFILE\Clawdmeter"
+  Copy-Item -Recurse '$RepoRoot' "$env:USERPROFILE\ClawdOnESP32"
+  cd "$env:USERPROFILE\ClawdOnESP32"
   powershell -ExecutionPolicy Bypass -File install-windows.ps1
 "@
 }
@@ -127,7 +127,7 @@ import daemon.autostart_windows as a
 a.enable(tray_script=r'$TrayScript')
 "@
 if ($LASTEXITCODE -ne 0) { throw "Autostart registration failed (exit $LASTEXITCODE)" }
-Log "Autostart registered - Clawdmeter will launch automatically at next logon"
+Log "Autostart registered - Clawd on ESP32 will launch automatically at next logon"
 
 # ------------------------------------------------------------------
 # Step 4: Launch the tray app (headless - BASE pythonw.exe, no console window)
@@ -149,5 +149,5 @@ $StartArgs = @{
     WorkingDirectory = $RepoRoot
 }
 Start-Process @StartArgs
-Log "Tray app started - look for the Clawdmeter icon in your notification area"
+Log "Tray app started - look for the Clawd on ESP32 icon in your notification area"
 Log "=== Install complete ==="

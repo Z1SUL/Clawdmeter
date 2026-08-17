@@ -1,7 +1,7 @@
 # Permission-gate hooks
 
 Lets Claude Code / Codex CLI / Antigravity CLI show a pending tool-call
-approval on the Clawdmeter device and gate on the device's Allow/Deny (or a
+approval on the Clawd on ESP32 device and gate on the device's Allow/Deny (or a
 `y`/`n` keypress in the same terminal — whichever answers first wins).
 
 **Nothing here is wired into any of your CLI configs automatically.** These
@@ -13,7 +13,7 @@ about the device, the daemon, or the hook itself misbehaves; keep that risk
 scoped until you've used it enough to trust it.
 
 Requires the daemon (`claude_usage_daemon_windows.py` / the tray app) to be
-running — the hook blocks waiting on `%LOCALAPPDATA%\Clawdmeter\perm_requests\`,
+running — the hook blocks waiting on `%LOCALAPPDATA%\ClawdOnESP32\perm_requests\`,
 which only the running daemon drains. If the daemon isn't running, every
 request times out after its `ttl` (default 55s) with no device round-trip at
 all — mildly annoying, never a hang.
@@ -70,7 +70,7 @@ to confirm it picked the hook up):
       {
         "matcher": ".*",
         "hooks": [
-          { "name": "clawdmeter", "type": "command", "command": "python \"C:\\path\\to\\esp32-project\\daemon\\hooks\\antigravity_permission_hook.py\"" }
+          { "name": "clawd-on-esp32", "type": "command", "command": "python \"C:\\path\\to\\esp32-project\\daemon\\hooks\\antigravity_permission_hook.py\"" }
         ]
       }
     ]

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Token / credentials settings window for Clawdmeter — Windows only.
+"""Token / credentials settings window for Clawd on ESP32 — Windows only.
 
 Launched from the tray menu's "Token Settings..." item as a SEPARATE PROCESS
 (tray_windows.py does `subprocess.Popen([pythonw.exe, this file])`) rather
@@ -12,7 +12,7 @@ lets the user point the daemon at a non-default location (useful when a CLI
 stores its login somewhere unusual, or when testing with a second account).
 Overrides are persisted as plain `key = value` lines in the same CONFIG_FILE
 the daemon already uses for chime/clock settings
-(%LOCALAPPDATA%\\Clawdmeter\\config) via write_config_overrides(), so the
+(%LOCALAPPDATA%\\ClawdOnESP32\\config) via write_config_overrides(), so the
 running daemon/tray picks them up on its next read — no restart needed.
 
 Usage::
@@ -127,7 +127,7 @@ class ProviderRow:
 class SettingsApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        root.title("Clawdmeter — Token Settings")
+        root.title("Clawd on ESP32 — Token Settings")
         root.resizable(False, False)
 
         outer = ttk.Frame(root, padding=_PAD)
@@ -165,10 +165,10 @@ class SettingsApp:
         try:
             d.write_config_overrides(updates)
         except OSError as e:
-            messagebox.showerror("Clawdmeter", f"Could not save settings:\n{e}")
+            messagebox.showerror("Clawd on ESP32", f"Could not save settings:\n{e}")
             return
         self._refresh_all()
-        messagebox.showinfo("Clawdmeter", "Saved. The daemon picks up changes on its next poll (~60s).")
+        messagebox.showinfo("Clawd on ESP32", "Saved. The daemon picks up changes on its next poll (~60s).")
 
 
 def main() -> None:

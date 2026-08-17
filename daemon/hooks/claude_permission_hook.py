@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Claude Code PreToolUse hook — routes permission requests to Clawdmeter.
+"""Claude Code PreToolUse hook — routes permission requests to Clawd on ESP32.
 
 NOT wired into any live Claude Code config by default. See
 daemon/hooks/README.md for how to enable this, and enable it project-scoped
@@ -52,7 +52,7 @@ def main() -> None:
     elif decision == "deny":
         output = {"hookSpecificOutput": {
             "hookEventName": "PreToolUse", "permissionDecision": "deny",
-            "permissionDecisionReason": "Denied via Clawdmeter",
+            "permissionDecisionReason": "Denied via Clawd on ESP32",
         }}
     else:  # timeout — fall through to Claude Code's own prompt
         output = {"hookSpecificOutput": {

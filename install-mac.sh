@@ -1,5 +1,5 @@
 #!/bin/bash
-# macOS installer for Clawdmeter daemon (Python + bleak + launchd).
+# macOS installer for Clawd on ESP32 daemon (Python + bleak + launchd).
 # Mirrors install.sh but uses LaunchAgents instead of systemd user units.
 set -e
 
@@ -132,7 +132,7 @@ configure_chime() {
     fi
 }
 
-echo "=== Clawdmeter macOS install ==="
+echo "=== Clawd on ESP32 macOS install ==="
 echo ""
 
 echo "[1/6] Checking prerequisites..."
@@ -261,7 +261,7 @@ echo ""
 echo "First-time Bluetooth pairing (after firmware is flashed):"
 echo "  1. Power on the device."
 echo "  2. Open System Settings → Bluetooth."
-echo "  3. Click 'Connect' next to 'Clawdmeter'."
+echo "  3. Click 'Connect' next to 'Clawd on ESP32'."
 echo "  4. The daemon will discover it within ~30 s and start polling."
 echo ""
 echo "Useful commands:"

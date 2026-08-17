@@ -3,12 +3,12 @@ setlocal
 cd /d "%~dp0"
 
 echo ==============================================
-echo   Clawdmeter - Windows Uninstall
+echo   Clawd on ESP32 - Windows Uninstall
 echo ==============================================
 echo.
 echo This turns off "start at login" and stops the tray/daemon process if
 echo one is running right now. It does not delete anything - the .venv,
-echo config, and daemon logs under %%LOCALAPPDATA%%\Clawdmeter are left in
+echo config, and daemon logs under %%LOCALAPPDATA%%\ClawdOnESP32 are left in
 echo place. Stopping here is a force-stop, not the tray icon's own "Quit"
 echo (which disconnects the device cleanly first) - the device may take a
 echo few seconds longer to notice the link dropped and go back to idle.
@@ -35,8 +35,8 @@ if errorlevel 1 (
 )
 
 echo.
-echo Stopping any running Clawdmeter tray/daemon process...
-powershell -NoProfile -Command "$ts = Join-Path '%REPO_ROOT%' 'daemon\tray_windows.py'; $hit = $false; Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^python' -and $_.CommandLine -and $_.CommandLine.Contains($ts) } | ForEach-Object { $hit = $true; Write-Host ('Stopping PID ' + $_.ProcessId); Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; if (-not $hit) { Write-Host 'No running Clawdmeter process found.' }"
+echo Stopping any running Clawd on ESP32 tray/daemon process...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0daemon\stop_daemon.ps1" -TargetScript "%REPO_ROOT%\daemon\tray_windows.py"
 
 echo.
 echo Done. Autostart is off and any running instance has been stopped.

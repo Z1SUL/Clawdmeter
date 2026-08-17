@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Codex CLI PermissionRequest hook — routes permission requests to Clawdmeter.
+"""Codex CLI PermissionRequest hook — routes permission requests to Clawd on ESP32.
 
 NOT wired into any live Codex config by default — see daemon/hooks/README.md.
 
@@ -52,7 +52,7 @@ def main() -> None:
     if decision == "allow":
         behavior = {"behavior": "allow"}
     else:  # "deny" or "timeout" — fail-safe, see module docstring
-        behavior = {"behavior": "deny", "message": "Denied via Clawdmeter"}
+        behavior = {"behavior": "deny", "message": "Denied via Clawd on ESP32"}
 
     output = {"hookSpecificOutput": {
         "hookEventName": "PermissionRequest", "decision": behavior,

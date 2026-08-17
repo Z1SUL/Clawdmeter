@@ -3,7 +3,7 @@
 
 Each CLI-specific hook (claude_permission_hook.py, codex_permission_hook.py,
 antigravity_permission_hook.py) calls request_permission() to hand a pending
-tool call to the Clawdmeter device and race it against a terminal keypress —
+tool call to the Clawd on ESP32 device and race it against a terminal keypress —
 whichever answers first wins. This writes a <rid>.request.json file into the
 daemon's PERM_REQUESTS_DIR and polls for <rid>.result.json, which
 claude_usage_daemon_windows.permission_broker_tick() writes once the device
@@ -28,13 +28,13 @@ except ImportError:
 
 PERM_REQUESTS_DIR = (
     Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-    / "Clawdmeter" / "perm_requests"
+    / "ClawdOnESP32" / "perm_requests"
 )
 _POLL_INTERVAL_S = 0.15
 
 
 def request_permission(provider: str, tool: str, desc: str, ttl: int = 55) -> str:
-    """Block until the Clawdmeter device or this terminal answers, or `ttl`
+    """Block until the Clawd on ESP32 device or this terminal answers, or `ttl`
     seconds elapse. Returns "allow", "deny", or "timeout" — never raises, so
     a broker/filesystem hiccup degrades to "timeout" rather than wedging the
     CLI that called this.
@@ -49,11 +49,11 @@ def request_permission(provider: str, tool: str, desc: str, ttl: int = 55) -> st
             encoding="utf-8",
         )
     except OSError as e:
-        print(f"[Clawdmeter] Could not reach the permission broker: {e}", file=sys.stderr)
+        print(f"[Clawd on ESP32] Could not reach the permission broker: {e}", file=sys.stderr)
         return "timeout"
 
     print(
-        f"[Clawdmeter] Waiting for approval on the device, or press y/n here "
+        f"[Clawd on ESP32] Waiting for approval on the device, or press y/n here "
         f"({ttl}s) — {tool}: {desc}",
         file=sys.stderr,
     )
@@ -86,5 +86,5 @@ def request_permission(provider: str, tool: str, desc: str, ttl: int = 55) -> st
         req_path.unlink(missing_ok=True)
         result_path.unlink(missing_ok=True)
 
-    print(f"[Clawdmeter] Decision: {decision}", file=sys.stderr)
+    print(f"[Clawd on ESP32] Decision: {decision}", file=sys.stderr)
     return decision

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Antigravity / Gemini CLI BeforeTool hook — routes permission requests to
-Clawdmeter.
+Clawd on ESP32.
 
 NOT wired into any live Gemini/Antigravity config by default — see
 daemon/hooks/README.md.
@@ -52,7 +52,7 @@ def main() -> None:
     if decision == "allow":
         output = {"decision": "allow"}
     else:  # "deny" or "timeout" — fail-safe, see module docstring
-        output = {"decision": "deny", "reason": "Denied via Clawdmeter"}
+        output = {"decision": "deny", "reason": "Denied via Clawd on ESP32"}
 
     print(json.dumps(output))
     sys.exit(0)

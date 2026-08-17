@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Unit tests for the bonded-device address fallback — BLE-04.
 
-A Clawdmeter that is paired AND connected to Windows (as a bonded HID
+A Clawd on ESP32 that is paired AND connected to Windows (as a bonded HID
 keyboard) no longer advertises, so BleakScanner.find_device_by_name() never
 returns it. The daemon must then connect directly by the device's address,
 which it recovers from the Windows PnP instance id.

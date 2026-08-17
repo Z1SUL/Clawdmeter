@@ -1,4 +1,4 @@
-# Clawdmeter
+# Clawd on ESP32
 
 <img src="assets/readme/waving.gif" width="120" align="right" alt="">
 
@@ -60,7 +60,7 @@ The board env name is required. Run `./flash-mac.sh` with no args to see the ava
 
 ### Pair the device
 
-After flashing, open **System Settings → Bluetooth** and click _Connect_ next to "Clawdmeter". The daemon only ever connects to the peripheral this Mac is paired/connected to — it never scans for a nearby device — so once it's connected here the daemon picks it up on its next poll (~60 s).
+After flashing, open **System Settings → Bluetooth** and click _Connect_ next to "Clawd on ESP32". The daemon only ever connects to the peripheral this Mac is paired/connected to — it never scans for a nearby device — so once it's connected here the daemon picks it up on its next poll (~60 s).
 
 ### Install the daemon
 
@@ -94,13 +94,13 @@ The board env name is required. Run `./flash.sh` with no args to see the availab
 
 ### Pair the device
 
-After flashing, the device advertises as "Clawdmeter". Pair it once:
+After flashing, the device advertises as "Clawd on ESP32". Pair it once:
 
 ```bash
 # Scan for the device
 bluetoothctl scan le
 
-# When "Clawdmeter" appears, pair and trust it
+# When "Clawd on ESP32" appears, pair and trust it
 bluetoothctl pair F4:12:FA:C0:8F:E5    # use your device's MAC
 bluetoothctl trust F4:12:FA:C0:8F:E5
 ```
@@ -129,7 +129,7 @@ Runs natively on Windows — no WSL required. A system-tray app polls your usage
 - **Native Windows** (not WSL).
 - **Python 3.11+** from [python.org](https://www.python.org/downloads/) — check _"Add python.exe to PATH"_ during install.
 - **Claude Code** installed, with `claude login` completed. The token is read from `%USERPROFILE%\.claude\.credentials.json` (falling back to `%LOCALAPPDATA%\Claude\` then `%APPDATA%\Claude\`).
-- The repo on a **native Windows path** (e.g. `%USERPROFILE%\Clawdmeter`), **not** a `\\wsl$` share — the installer refuses a WSL path.
+- The repo on a **native Windows path** (e.g. `%USERPROFILE%\ClawdOnESP32`), **not** a `\\wsl$` share — the installer refuses a WSL path.
 
 ### Flash the firmware
 
@@ -141,7 +141,7 @@ Run `pio run -d firmware` with no env to see the available board envs.
 
 ### Pair the device
 
-The device is a bonded BLE HID keyboard, so pair it once: **Settings → Bluetooth & devices → Add device → Bluetooth**, then select "Clawdmeter". Pairing is **required** — it enables the physical buttons and keeps a persistent connection (the device keeps showing your last-synced usage even after the daemon quits). To undo, use **Remove device** (this disables the buttons).
+The device is a bonded BLE HID keyboard, so pair it once: **Settings → Bluetooth & devices → Add device → Bluetooth**, then select "Clawd on ESP32". Pairing is **required** — it enables the physical buttons and keeps a persistent connection (the device keeps showing your last-synced usage even after the daemon quits). To undo, use **Remove device** (this disables the buttons).
 
 ### Install the daemon (recommended)
 
@@ -173,8 +173,8 @@ The icon's corner bubble shows state — **green** Connected, **amber** Scanning
 ### Logs and troubleshooting
 
 ```powershell
-Get-Content $env:LOCALAPPDATA\Clawdmeter\daemon.log -Tail 30        # view logs
-reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v Clawdmeter /f   # remove autostart
+Get-Content $env:LOCALAPPDATA\ClawdOnESP32\daemon.log -Tail 30        # view logs
+reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v ClawdOnESP32 /f   # remove autostart
 ```
 
 | Symptom                                | Fix                                                      |
