@@ -1,6 +1,6 @@
 # Permission-gate hooks
 
-Lets Claude Code / Codex CLI / Antigravity CLI show a pending tool-call
+Lets Claude Code / Codex CLI show a pending tool-call
 approval on the Clawd on ESP32 device and gate on the device's Allow/Deny (or a
 `y`/`n` keypress in the same terminal — whichever answers first wins).
 
@@ -56,29 +56,6 @@ timeout = 60
 
 Smoke-test with a harmless command first. A timeout here denies (fail-safe)
 rather than falling through — see the script's docstring for why.
-
-## Antigravity / Gemini CLI (real feature, config location not verified — see script docstring)
-
-Exact settings-file location needs confirming on your install (try
-`~/.gemini/settings.json` first; check the CLI's `/hooks`-equivalent command
-to confirm it picked the hook up):
-
-```json
-{
-  "hooks": {
-    "BeforeTool": [
-      {
-        "matcher": ".*",
-        "hooks": [
-          { "name": "clawd-on-esp32", "type": "command", "command": "python \"C:\\path\\to\\esp32-project\\daemon\\hooks\\antigravity_permission_hook.py\"" }
-        ]
-      }
-    ]
-  }
-}
-```
-
-A timeout here also denies (fail-safe) — same reasoning as Codex.
 
 ## Removing a hook
 

@@ -63,13 +63,6 @@ def _codex_status() -> tuple[str, str]:
     return ("found", f"account {tokens.get('account_id') or 'unknown'}")
 
 
-def _antigravity_status() -> tuple[str, str]:
-    creds = d._read_gemini_creds()
-    if not creds or not creds.get("refresh_token"):
-        return ("not found", f"checked: {d.gemini_creds_path()}")
-    return ("found", "refresh token present")
-
-
 class ProviderRow:
     """One provider's status line + path override entry, inside `parent`."""
 
@@ -146,12 +139,10 @@ class SettingsApp:
             ProviderRow(outer, 1, "Claude", "claude_credentials_path",
                         d.claude_credentials_default(), _claude_status),
             ProviderRow(outer, 5, "Codex", "codex_auth_path", d.CODEX_AUTH_FILE, _codex_status),
-            ProviderRow(outer, 9, "Antigravity (Gemini CLI)", "gemini_creds_path",
-                        d.GEMINI_OAUTH_CREDS_FILE, _antigravity_status),
         ]
 
         btns = ttk.Frame(outer)
-        btns.grid(row=13, column=0, columnspan=3, sticky="e", pady=(_PAD, 0))
+        btns.grid(row=9, column=0, columnspan=3, sticky="e", pady=(_PAD, 0))
         ttk.Button(btns, text="Refresh status", command=self._refresh_all).pack(side="left", padx=4)
         ttk.Button(btns, text="Save", command=self._save).pack(side="left", padx=4)
         ttk.Button(btns, text="Close", command=root.destroy).pack(side="left", padx=4)

@@ -3,9 +3,13 @@
 **Clawd on ESP32** (renamed from "Clawdmeter" 2026-08-17 — see git history if
 old references turn up in a stale branch/issue) — ESP32-S3 / ESP32-C6
 firmware for a desk-side AI coding-CLI usage monitor. Started Claude-Code-only;
-now shows **Claude Code, Codex CLI, and Antigravity CLI** side by side (tap to
-cycle), with providers a user hasn't logged into auto-hidden from the
-carousel. Each supported board lives in its own `firmware/src/boards/<name>/`
+now shows **Claude Code and Codex CLI** side by side (tap to cycle), with a
+provider a user hasn't logged into auto-hidden from the carousel. (A third
+provider, Antigravity CLI, was added and then removed 2026-08-23 — Google
+cut off the public Gemini Code Assist quota API that its usage numbers
+depended on, redirecting individual accounts to an undocumented
+Antigravity-only backend; see git history around that date if reviving it.)
+Each supported board lives in its own `firmware/src/boards/<name>/`
 folder and is selected via PlatformIO's `build_src_filter`. Adding a board
 means dropping in a new folder + a new `[env:...]` block — `main.cpp`,
 `ui.cpp`, and `splash.cpp` never see board-specific code. See
@@ -35,8 +39,8 @@ Plus one non-hardware target: `boards/sim/` — **native desktop simulator** (SD
 The shared code calls a small HAL (`firmware/src/hal/`) that each board implements: display, touch, input, power, IMU. Optional features are guarded by `BoardCaps` (runtime) and `BOARD_HAS_*` (compile-time) rather than `#ifdef BOARD_*`.
 
 Connects to a host daemon over BLE; the daemon polls each provider's usage
-API (Anthropic for Claude, ChatGPT backend for Codex, Cloud Code Assist for
-Antigravity) and writes JSON payloads to the device. **Windows is the
+API (Anthropic for Claude, ChatGPT backend for Codex) and writes JSON
+payloads to the device. **Windows is the
 actively-developed daemon platform** — see "Daemon / host side" below; the
 macOS/Linux daemon exists and is renamed/kept in sync but wasn't touched
 functionally this session. This file is for future Claude Code sessions to
@@ -105,20 +109,20 @@ firmware/src/
     template/               — copy this to bootstrap a new port
   main.cpp                  — setup() + loop(): HAL calls only, zero #ifdef BOARD_*
   ui.{h,cpp}                — 2-screen UI (splash, usage). Usage screen is a per-provider carousel
-                               (tap to cycle Claude/Codex/Antigravity — provider_tap_cb, skips
-                               providers the daemon reports as unconfigured) plus a full-screen
+                               (tap to cycle Claude/Codex — provider_tap_cb, skips
+                               a provider the daemon reports as unconfigured) plus a full-screen
                                permission-gate modal overlay (Allow/Deny, independent of screen_t).
                                compute_layout() picks fonts/positions from board_caps() (responsive —
                                current breakpoint: H >= 460 → large, else compact)
   splash.{h,cpp}             — 20×20 pixel-art engine. CELL = min(W,H)/20, centered.
   ble.{h,cpp}                — NimBLE peripheral: custom data service (RX/TX/REQ/PERM_RESP) + HID keyboard
-  data.h                     — UsageData struct + provider_id_t (CLAUDE/CODEX/ANTIGRAVITY)
+  data.h                     — UsageData struct + provider_id_t (CLAUDE/CODEX)
   idle.{h,cpp}, idle_cfg.h   — brightness fade/sleep state machine + timeout config
   brightness.{h,cpp}         — user brightness level, routes through idle's awake-brightness target
   usage_rate.{h,cpp}         — session-% rate-of-change tracking that drives splash mood groups
   chime.{h,cpp}, sound_hal.h, bell_pcm.h, es8311*.h — session-reset chime engine (board-optional; see hal/sound_hal.h)
   theme.h                    — THEME_BG/PANEL/TEXT/DIM/ACCENT/GREEN/AMBER/RED/BAR_BG color tokens shared by ui.cpp
-  icons.h                    — icon arrays. Battery (5×) + provider logos (Codex/Antigravity) are RGB565A8 with alpha; rest are raw RGB565.
+  icons.h                    — icon arrays. Battery (5×) + the Codex provider logo are RGB565A8 with alpha; rest are raw RGB565.
   logo.h, clawd_still.h      — 80×80 RGB565 static brand logo / still Clawd (non-PSRAM corner mascot fallback)
   font_*.c                   — pre-compiled LVGL 9 bitmap fonts (Tiempos 56/34, Styrene 48/28/24/20/16/14/12, Mono 32/18)
   splash_animations.h        — generated, do not hand-edit
@@ -262,10 +266,26 @@ See `~/.claude/projects/.../memory/` files for persistent context (user is an em
 
 ## Recent session highlights
 
+- **Antigravity CLI provider removed (2026-08-23).** An Antigravity CLI
+  update moved its OAuth token from the plain `~/.gemini/oauth_creds.json`
+  file to Windows Credential Manager, breaking the daemon's free-ride read;
+  fixing that surfaced a deeper problem — Google has cut the public Gemini
+  Code Assist quota API off for individual accounts (`loadCodeAssist`
+  returns `UNSUPPORTED_CLIENT`, telling them to migrate to Antigravity's
+  own — undocumented — surface), so usage numbers can't be fetched at all
+  right now. Rather than ship a provider that always shows empty, pulled it
+  back out end-to-end: firmware (`provider_id_t`, carousel, corner-logo
+  asset, `ui_set_providers_enabled()`/`parse_provider_id()`), the Windows
+  daemon (`poll_antigravity()`, the Credential Manager reader, the
+  `gemini_creds_path` Settings row), and the unwired
+  `antigravity_permission_hook.py`. Back to two providers (Claude, Codex).
+  Reviving it means re-deriving the real Antigravity quota-API request
+  shape (a `cloudaicompanionProject`-scoped call, likely needs a network
+  capture of a working antigravity-cli session to find the exact body) —
+  see git history around this date for the removed code as a starting point.
 - **Multi-provider + Windows daemon overhaul (2026-08-17).** Added Codex CLI
-  and Antigravity CLI as second/third providers (payload schema, carousel
-  UI, corner logos, daemon pollers — Claude, then Codex, then Antigravity
-  landed as separate phases). Built the ESP32 permission gate (device-side
+  as a second provider (payload schema, carousel UI, corner logo, daemon
+  poller). Built the ESP32 permission gate (device-side
   Allow/Deny for pending AI tool calls, racing a terminal keypress). Added
   provider-visibility (auto-hide providers with no credentials file). Built
   out the Windows daemon into a real installable app: Token Settings
@@ -289,25 +309,19 @@ See `~/.claude/projects/.../memory/` files for persistent context (user is an em
 
 ### Windows daemon — actively developed, multi-provider
 
-`daemon/claude_usage_daemon_windows.py` polls all three providers on
-independent timers inside one `connect_and_run()` loop (`POLL_INTERVAL=60`,
-`TICK=5` — Claude via `poll_api()`, Codex via `poll_codex()`, Antigravity via
-`poll_antigravity()`) and writes each provider's payload tagged with
-`"id":"claude"|"codex"|"antigravity"`. Token sources (never refreshed by the
-daemon except Antigravity's — see below):
+`daemon/claude_usage_daemon_windows.py` polls both providers on independent
+timers inside one `connect_and_run()` loop (`POLL_INTERVAL=60`, `TICK=5` —
+Claude via `poll_api()`, Codex via `poll_codex()`) and writes each
+provider's payload tagged with `"id":"claude"|"codex"`. Token sources
+(neither refreshed by the daemon — each CLI owns refreshing its own):
 - **Claude**: `_windows_credential_candidates()` — `claude_credentials_path`
   config override → `CLAUDE_CREDENTIALS_PATH` → `CLAUDE_CONFIG_DIR` →
   `~/.claude/.credentials.json` → `%LOCALAPPDATA%/Claude/` → `%APPDATA%/Claude/`.
 - **Codex**: `codex_auth_path()` — config override → `~/.codex/auth.json`.
   Pure free-ride; Codex CLI owns refreshing its own token.
-- **Antigravity**: `gemini_creds_path()` — config override →
-  `~/.gemini/oauth_creds.json` (shared with Gemini CLI). This is the one
-  provider the daemon **does** refresh itself (`_refresh_gemini_token()`,
-  writes the new access token back to the same file) — Google tokens expire
-  in ~1h, too short for a pure free-ride to work. Client id/secret are the
-  public "installed app" credentials gemini-cli ships with (not a real
-  secret, but GitHub's push-protection scanner flags them anyway — see the
-  "allow secret" links if a push to `origin` ever gets blocked on this file).
+
+A third provider, Antigravity CLI, was added and then removed
+2026-08-23 — see "Recent session highlights".
 
 Config file (chime/clock/credential-path overrides, editable via the tray's
 **Token Settings...** window — `settings_windows.py`, Tkinter):
@@ -367,7 +381,7 @@ Bash daemon (`daemon/claude-usage-daemon.sh`) reads OAuth token, polls Anthropic
 
 ### Permission gate (Windows daemon only)
 
-Lets Claude Code / Codex CLI / Antigravity CLI show a pending tool-call
+Lets Claude Code / Codex CLI show a pending tool-call
 approval on the device and gate on its Allow/Deny — racing a `y`/`n`
 keypress in the same terminal, whichever answers first wins. RX carries a
 new tagged payload
@@ -389,14 +403,14 @@ prompt where that CLI has a neutral pass-through value, denies otherwise).
 
 ### Provider visibility (Windows daemon only)
 
-A user who's only logged into one or two of the three CLIs doesn't see the
-others as permanently-empty carousel tabs. RX also carries `{"type":"providers","claude":bool,"codex":bool,"antigravity":bool}`,
+A user who's only logged into one of the two CLIs doesn't see the other
+as a permanently-empty carousel tab. RX also carries `{"type":"providers","claude":bool,"codex":bool}`,
 sent whenever `_providers_enabled_now()`'s file-existence check
 (`claude_usage_daemon_windows.py`) changes — structural presence of a
 credentials file, not "currently valid," so an expired-but-present token
 still counts as enabled. Firmware: `ui_set_providers_enabled()` in `ui.cpp`
 gates `provider_tap_cb`'s carousel via `next_enabled_provider()`; if the
-active tab itself gets disabled it jumps forward immediately. Defaults all
-three enabled until the first such message arrives, so older daemons that
+active tab itself gets disabled it jumps forward immediately. Defaults both
+enabled until the first such message arrives, so older daemons that
 never send one see unchanged (cycle-all) behavior. Serial test commands:
 `provtest_claude_off`, `provtest_codex_off`, `provtest_reset`.

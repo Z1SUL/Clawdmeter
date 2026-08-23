@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Shared broker client for the ESP32 permission-gate hooks.
 
-Each CLI-specific hook (claude_permission_hook.py, codex_permission_hook.py,
-antigravity_permission_hook.py) calls request_permission() to hand a pending
-tool call to the Clawd on ESP32 device and race it against a terminal keypress —
+Each CLI-specific hook (claude_permission_hook.py, codex_permission_hook.py)
+calls request_permission() to hand a pending tool call to the Clawd on ESP32
+device and race it against a terminal keypress —
 whichever answers first wins. This writes a <rid>.request.json file into the
 daemon's PERM_REQUESTS_DIR and polls for <rid>.result.json, which
 claude_usage_daemon_windows.permission_broker_tick() writes once the device

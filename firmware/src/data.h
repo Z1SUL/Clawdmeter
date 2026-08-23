@@ -7,15 +7,13 @@
 enum provider_id_t {
     PROVIDER_CLAUDE = 0,
     PROVIDER_CODEX,
-    PROVIDER_ANTIGRAVITY,
     PROVIDER_COUNT,
 };
 
 static inline const char* provider_display_name(provider_id_t id) {
     switch (id) {
-        case PROVIDER_CODEX:       return "Codex";
-        case PROVIDER_ANTIGRAVITY: return "Antigravity";
-        default:                   return "Claude";
+        case PROVIDER_CODEX: return "Codex";
+        default:              return "Claude";
     }
 }
 

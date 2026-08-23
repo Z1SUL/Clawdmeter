@@ -21,10 +21,10 @@
 #include "hal/imu_hal.h"
 #include "hal/sound_hal.h"
 
-// One slot per provider (Claude/Codex/Antigravity). The daemon sends one
-// provider's update per BLE write; each lands in its own slot so the others
-// keep their last-known values. Slot 0 (Claude) is also what legacy daemons
-// without an "id" field write to, preserving pre-multi-provider behavior.
+// One slot per provider (Claude/Codex). The daemon sends one provider's
+// update per BLE write; each lands in its own slot so the other keeps its
+// last-known values. Slot 0 (Claude) is also what legacy daemons without an
+// "id" field write to, preserving pre-multi-provider behavior.
 static provider_state_t providers[PROVIDER_COUNT] = {};
 
 // ---- LVGL draw buffers (partial render mode) ----
@@ -104,7 +104,6 @@ static void my_touch_cb(lv_indev_t* indev, lv_indev_data_t* data) {
 static provider_id_t parse_provider_id(const char* id_str) {
     if (!id_str) return PROVIDER_CLAUDE;
     if (strcmp(id_str, "codex") == 0) return PROVIDER_CODEX;
-    if (strcmp(id_str, "antigravity") == 0) return PROVIDER_ANTIGRAVITY;
     return PROVIDER_CLAUDE;  // unknown/missing id -> legacy single-provider behavior
 }
 
@@ -190,11 +189,11 @@ static void check_serial_cmd() {
             else if (strcmp(cmd_buf, "permtest") == 0)
                 ui_show_permission_request(PROVIDER_CLAUDE, "test1234", "Bash", "echo hello world", 30);
             else if (strcmp(cmd_buf, "provtest_codex_off") == 0)
-                ui_set_providers_enabled(true, false, true);
+                ui_set_providers_enabled(true, false);
             else if (strcmp(cmd_buf, "provtest_claude_off") == 0)
-                ui_set_providers_enabled(false, true, true);
+                ui_set_providers_enabled(false, true);
             else if (strcmp(cmd_buf, "provtest_reset") == 0)
-                ui_set_providers_enabled(true, true, true);
+                ui_set_providers_enabled(true, true);
             cmd_pos = 0;
         } else if (cmd_pos < CMD_BUF_SIZE - 1) {
             cmd_buf[cmd_pos++] = c;
@@ -419,8 +418,8 @@ void loop() {
             ble_send_ack();
         } else if (strstr(raw, "\"type\":\"providers\"") != nullptr) {
             // Tells the device which providers the daemon actually has
-            // configured, so a user running only Claude (or only Codex, ...)
-            // doesn't see the others as permanently-empty tabs in the
+            // configured, so a user running only Claude (or only Codex)
+            // doesn't see the other as a permanently-empty tab in the
             // tap carousel. Absent keys default true (matches the daemon's
             // own default-enabled posture) so a partial/old payload can't
             // accidentally hide a provider it just forgot to mention.
@@ -428,8 +427,7 @@ void loop() {
             if (!deserializeJson(doc, raw)) {
                 ui_set_providers_enabled(
                     doc["claude"] | true,
-                    doc["codex"] | true,
-                    doc["antigravity"] | true);
+                    doc["codex"] | true);
             }
             ble_send_ack();
         } else {
