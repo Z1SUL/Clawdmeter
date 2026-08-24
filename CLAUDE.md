@@ -1,10 +1,27 @@
 # Project context
 
-ESP32-S3 / ESP32-C6 firmware for a desk-side Claude Code usage monitor. Each
-supported board lives in its own `firmware/src/boards/<name>/` folder and is
-selected via PlatformIO's `build_src_filter`. Adding a board means dropping in
-a new folder + a new `[env:...]` block — `main.cpp`, `ui.cpp`, and `splash.cpp`
-never see board-specific code. See [`docs/porting/adding-a-board.md`](docs/porting/adding-a-board.md).
+**Clawd on ESP32** (renamed from "Clawdmeter" 2026-08-17 — see git history if
+old references turn up in a stale branch/issue) — ESP32-S3 / ESP32-C6
+firmware for a desk-side AI coding-CLI usage monitor. Started Claude-Code-only;
+now shows **Claude Code and Codex CLI** side by side (tap to cycle), with a
+provider a user hasn't logged into auto-hidden from the carousel. (A third
+provider, Antigravity CLI, was added and then removed 2026-08-23 — Google
+cut off the public Gemini Code Assist quota API that its usage numbers
+depended on, redirecting individual accounts to an undocumented
+Antigravity-only backend; see git history around that date if reviving it.)
+Each supported board lives in its own `firmware/src/boards/<name>/`
+folder and is selected via PlatformIO's `build_src_filter`. Adding a board
+means dropping in a new folder + a new `[env:...]` block — `main.cpp`,
+`ui.cpp`, and `splash.cpp` never see board-specific code. See
+[`docs/porting/adding-a-board.md`](docs/porting/adding-a-board.md).
+
+This repo is a fork of [HermannBjorgvin/Clawdmeter](https://github.com/HermannBjorgvin/Clawdmeter)
+(remote `upstream`, read-only reference — never push there). The user's own
+fork/remote is `origin`; PRs go `multi-provider-ble` → `origin/main`. `origin`
+and `upstream` have unrelated git histories (this repo was bootstrapped from
+a file-copy snapshot, not a clone) — merging the two needs
+`--allow-unrelated-histories` and resolving every conflict in favor of this
+repo's content (see commit `41843d2` for the one-time fixup).
 
 Six ports today (two SoC families, four panel sizes):
 
@@ -21,7 +38,13 @@ Plus one non-hardware target: `boards/sim/` — **native desktop simulator** (SD
 
 The shared code calls a small HAL (`firmware/src/hal/`) that each board implements: display, touch, input, power, IMU. Optional features are guarded by `BoardCaps` (runtime) and `BOARD_HAS_*` (compile-time) rather than `#ifdef BOARD_*`.
 
-Connects to a host daemon over BLE; daemon polls Anthropic API for usage data. This file is for future Claude Code sessions to bootstrap quickly. Read this first.
+Connects to a host daemon over BLE; the daemon polls each provider's usage
+API (Anthropic for Claude, ChatGPT backend for Codex) and writes JSON
+payloads to the device. **Windows is the
+actively-developed daemon platform** — see "Daemon / host side" below; the
+macOS/Linux daemon exists and is renamed/kept in sync but wasn't touched
+functionally this session. This file is for future Claude Code sessions to
+bootstrap quickly. Read this first.
 
 ## Hardware (critical pins)
 
@@ -58,7 +81,7 @@ ESP32-C6 sibling of the S3 1.8: same 368×448 SH8601 panel + FocalTech touch, di
 - Touch: **FT3168** via I2C (SDA=15, SCL=14, **INT=38, RST=9** direct GPIO, addr=0x38). Same inline FocalTech reader as the 1.8 port (no GPLv3 `Arduino_DriveBus` dependency). Coordinates verified end-to-end with the BLE reset zone.
 - PMU: AXP2101 @ 0x34 (same chip as 2.16/1.8 — `XPowersLib` reused). PWR button routes through AXP PKEY IRQs (short / long / positive), same path as the 2.16 — no IO expander.
 - IMU: QMI8658 @ 0x6B (initialized for I2C bus health; rotation logic disabled — fixed watch enclosure orientation).
-- RTC: **PCF85063** on the same I2C bus, powered through AXP2101 for retention. Not used by Clawdmeter but present for future features.
+- RTC: **PCF85063** on the same I2C bus, powered through AXP2101 for retention. Not used by Clawd on ESP32 but present for future features.
 - Audio codec: **ES8311** + ES7210 ADC on the same I2C bus. The amp path is unverified on this board, so `sound.cpp` no-ops (same posture as the C6 1.8) — the shared `chime.cpp` engine is ready to wire up once it's tested on hardware.
 - **No IO expander** despite the Waveshare wiki FAQ implying one. The schematic shows Key3/PWR wired directly to AXP2101 PWRON; touch reset and display reset are direct GPIOs. `board_init()` pulses LCD_RESET (GPIO 8) and TP_RESET (GPIO 9) before display/touch HAL init.
 - Buttons: GPIO 0 (BOOT → Space/voice-mode), AXP PKEY (PWR → cycle screens; hold-to-pair). **No third button**.
@@ -85,15 +108,34 @@ firmware/src/
     sim/                    — native desktop simulator: SDL2 + Arduino shims + scenario playback
     template/               — copy this to bootstrap a new port
   main.cpp                  — setup() + loop(): HAL calls only, zero #ifdef BOARD_*
-  ui.{h,cpp}                — 3-screen UI (splash, usage, bluetooth). compute_layout() picks fonts/positions from board_caps() (responsive — current breakpoint: H >= 460 → large, else compact)
-  splash.{h,cpp}            — 20×20 pixel-art engine. CELL = min(W,H)/20, centered.
-  ble.{h,cpp}               — NimBLE peripheral: custom data service + HID keyboard
-  data.h                    — UsageData struct
-  icons.h                   — icon arrays. Battery (5×) are RGB565A8 with alpha; rest are raw RGB565.
-  logo.h                    — 80×80 RGB565 logo
-  font_*.c                  — pre-compiled LVGL 9 bitmap fonts (Tiempos 56/34, Styrene 48/28/24/20/16/14/12, Mono 32/18)
-  splash_animations.h       — generated, do not hand-edit
+  ui.{h,cpp}                — 2-screen UI (splash, usage). Usage screen is a per-provider carousel
+                               (tap to cycle Claude/Codex — provider_tap_cb, skips
+                               a provider the daemon reports as unconfigured) plus a full-screen
+                               permission-gate modal overlay (Allow/Deny, independent of screen_t).
+                               compute_layout() picks fonts/positions from board_caps() (responsive —
+                               current breakpoint: H >= 460 → large, else compact)
+  splash.{h,cpp}             — 20×20 pixel-art engine. CELL = min(W,H)/20, centered.
+  ble.{h,cpp}                — NimBLE peripheral: custom data service (RX/TX/REQ/PERM_RESP) + HID keyboard
+  data.h                     — UsageData struct + provider_id_t (CLAUDE/CODEX)
+  idle.{h,cpp}, idle_cfg.h   — brightness fade/sleep state machine + timeout config
+  brightness.{h,cpp}         — user brightness level, routes through idle's awake-brightness target
+  usage_rate.{h,cpp}         — session-% rate-of-change tracking that drives splash mood groups
+  chime.{h,cpp}, sound_hal.h, bell_pcm.h, es8311*.h — session-reset chime engine (board-optional; see hal/sound_hal.h)
+  theme.h                    — THEME_BG/PANEL/TEXT/DIM/ACCENT/GREEN/AMBER/RED/BAR_BG color tokens shared by ui.cpp
+  icons.h                    — icon arrays. Battery (5×) + the Codex provider logo are RGB565A8 with alpha; rest are raw RGB565.
+  logo.h, clawd_still.h      — 80×80 RGB565 static brand logo / still Clawd (non-PSRAM corner mascot fallback)
+  font_*.c                   — pre-compiled LVGL 9 bitmap fonts (Tiempos 56/34, Styrene 48/28/24/20/16/14/12, Mono 32/18)
+  splash_animations.h        — generated, do not hand-edit
 docs/porting/               — adding-a-board.md, hal-contract.md, capability-flags.md
+
+daemon/                      — host-side pollers; see "Daemon / host side" below for the full breakdown
+installer/clawd_on_esp32.iss — Inno Setup script; builds dist/ClawdOnESP32Setup.exe
+runtime/python/              — portable/embeddable Python bundle (bleak, httpx, pystray, Pillow, tkinter
+                                all pre-installed) committed to the repo so the Windows installer needs
+                                neither a system Python nor internet access. See the "Building that
+                                runtime\python\ folder yourself" note in daemon/README-windows.md if
+                                it's ever missing/stale.
+install.bat / uninstall.bat / install-windows.ps1 — Windows dev-checkout install path (see below)
 ```
 
 Each board folder contains: `board.h` (pins, I2C addresses, `BOARD_HAS_*` flags),
@@ -154,7 +196,7 @@ hardware boards, not shared code).
 
 The firmware ships a `screenshot` serial command that dumps the LVGL framebuffer. `./screenshot.sh out.png [port]` captures a PNG sized to the active display (480×480 or 368×448). **Use this on every UI iteration** — Read the PNG with the Read tool, verify the change visually, iterate. Script auto-picks the macOS/Linux default port and falls back to pio's bundled Python if pyserial isn't on the system Python.
 
-The boot screen is `SCREEN_SPLASH` and only advances on a physical button press, so a fresh flash will sit on the splash. To screenshot the screen you're actually editing without asking the user to press a button, **temporarily change the default boot screen** in `main.cpp` (search for `ui_show_screen(SCREEN_SPLASH);`) to `SCREEN_USAGE` / `SCREEN_CONTROLLER` / `SCREEN_BLUETOOTH`, do your iteration, then revert before committing.
+The boot screen is `SCREEN_SPLASH` and only advances on a physical button press, so a fresh flash will sit on the splash. To screenshot the screen you're actually editing without asking the user to press a button, **temporarily change the default boot screen** in `main.cpp` (search for `ui_show_screen(SCREEN_SPLASH);`) to `SCREEN_USAGE` (the only other value in `screen_t` — no separate controller/bluetooth screens exist), do your iteration, then revert before committing. There are also debug serial commands for testing UI states that aren't otherwise reachable without a live daemon/hook/hardware event: `permtest` (shows the permission-gate modal), `provtest_claude_off` / `provtest_codex_off` / `provtest_reset` (exercise the provider-visibility carousel skip/auto-jump).
 
 ## Critical gotchas
 
@@ -224,6 +266,66 @@ See `~/.claude/projects/.../memory/` files for persistent context (user is an em
 
 ## Recent session highlights
 
+- **Claude Desktop confirmed not a viable credential fallback; dead fallback
+  paths removed (2026-08-24).** Diagnosed a report of Claude usage going
+  "no data" on the device: root cause was a genuine, temporary Claude OAuth
+  token expiry (daemon never refreshes Claude's own token — pure free-ride,
+  same as Codex — only whatever refreshes `~/.claude/.credentials.json`,
+  i.e. actually running the `claude` CLI in a terminal, fixes it; it
+  self-resolved once the CLI was used again). That raised the follow-up
+  question of whether running Claude Desktop in the background could serve
+  as a fallback token source. Investigated on-disk: this machine's Claude
+  Desktop is Store-installed (MSIX/AppContainer), so `%APPDATA%\Claude`
+  redirects to `%LOCALAPPDATA%\Packages\Claude_<id>\LocalCache\Roaming\Claude\`
+  and Desktop never writes a plain `.credentials.json` to either the old
+  `%LOCALAPPDATA%\Claude\` or `%APPDATA%\Claude\` fallback paths the daemon
+  used to probe — its own account auth is a web session (cookies/Local
+  Storage in that same Chromium profile), not this OAuth file. Desktop's
+  "Cowork"/local-agent-mode feature does spin up isolated Claude Code CLI
+  instances with their own `.claude/.credentials.json`, but each lives
+  under a per-session UUID path inside the sandbox and is a one-off
+  snapshot (found one over two weeks stale) — not a stable fallback either.
+  Net effect: the daemon's `%LOCALAPPDATA%\Claude\`/`%APPDATA%\Claude\`
+  fallback probes never fired on a Store-installed Desktop and were
+  removed from `_windows_credential_candidates()` in
+  `daemon/claude_usage_daemon_windows.py` (now just the config/env
+  overrides + the one real `~/.claude/.credentials.json` path), with the
+  investigation recorded in that function's docstring and in
+  `daemon/README-windows.md`. Reviving a Desktop-based fallback would mean
+  the same cookie-scraping approach `trafficmonitor-ai-usage-plugin` uses
+  against claude.ai's web session (see its `helper/claude-web-helper/`) —
+  not attempted here, tradeoffs (extra browser-profile management, reliance
+  on an undocumented internal web API) judged not worth it over just
+  waiting for the next real CLI use.
+- **Antigravity CLI provider removed (2026-08-23).** An Antigravity CLI
+  update moved its OAuth token from the plain `~/.gemini/oauth_creds.json`
+  file to Windows Credential Manager, breaking the daemon's free-ride read;
+  fixing that surfaced a deeper problem — Google has cut the public Gemini
+  Code Assist quota API off for individual accounts (`loadCodeAssist`
+  returns `UNSUPPORTED_CLIENT`, telling them to migrate to Antigravity's
+  own — undocumented — surface), so usage numbers can't be fetched at all
+  right now. Rather than ship a provider that always shows empty, pulled it
+  back out end-to-end: firmware (`provider_id_t`, carousel, corner-logo
+  asset, `ui_set_providers_enabled()`/`parse_provider_id()`), the Windows
+  daemon (`poll_antigravity()`, the Credential Manager reader, the
+  `gemini_creds_path` Settings row), and the unwired
+  `antigravity_permission_hook.py`. Back to two providers (Claude, Codex).
+  Reviving it means re-deriving the real Antigravity quota-API request
+  shape (a `cloudaicompanionProject`-scoped call, likely needs a network
+  capture of a working antigravity-cli session to find the exact body) —
+  see git history around this date for the removed code as a starting point.
+- **Multi-provider + Windows daemon overhaul (2026-08-17).** Added Codex CLI
+  as a second provider (payload schema, carousel UI, corner logo, daemon
+  poller). Built the ESP32 permission gate (device-side
+  Allow/Deny for pending AI tool calls, racing a terminal keypress). Added
+  provider-visibility (auto-hide providers with no credentials file). Built
+  out the Windows daemon into a real installable app: Token Settings
+  window, double-click install.bat/uninstall.bat, and a fully-offline Inno
+  Setup installer (bundled portable Python, including tkinter — the stock
+  embeddable distribution doesn't ship it). Renamed the whole project from
+  "Clawdmeter" to "Clawd on ESP32" and re-verified BLE reconnect under the
+  new name on hardware. See "Daemon / host side" below for the durable
+  reference; this bullet is the changelog entry.
 - **AMOLED-1.8 chime verified on hardware + EXIO2 touch-kill fix (2026-07-13).** The 1.8's `amp_enable` hook drove both GPIO 46 and XCA9554 EXIO2 ("the unused one is harmless") — but pulling EXIO2 low takes the FT3168 off the I2C bus (chip stops ACKing; IDF reports it as `ESP_ERR_INVALID_STATE`, which reads like a driver wedge and cost a long I2S red-herring chase). Amp enable is GPIO 46 only; EXIO2 must stay HIGH. Chime, touch, buttons, and BLE bond persistence all verified on a real 1.8.
 - **Device-abstraction refactor (2026-05-18).** All board-conditional code moved out of shared files into `boards/<name>/` and behind a HAL in `hal/`. ~30 `#ifdef BOARD_*` blocks went to zero. UI is responsive via `compute_layout()` driven by `board_caps()`. New ports add a folder + a PlatformIO env — no shared file edits.
 - Added second board port: Waveshare AMOLED-1.8 (368×448 portrait, SH8601, FT3168, XCA9554 IO expander).
@@ -236,16 +338,110 @@ See `~/.claude/projects/.../memory/` files for persistent context (user is an em
 
 ## Daemon / host side
 
-Bash daemon (`daemon/claude-usage-daemon.sh`) reads OAuth token, polls Anthropic API, sends JSON over BLE GATT. Run with `systemctl --user start claude-usage-daemon`. The unit file's `ExecStart` is the absolute path to the script — repoint it when switching between the worktree and the main checkout.
+### Windows daemon — actively developed, multi-provider
+
+`daemon/claude_usage_daemon_windows.py` polls both providers on independent
+timers inside one `connect_and_run()` loop (`POLL_INTERVAL=60`, `TICK=5` —
+Claude via `poll_api()`, Codex via `poll_codex()`) and writes each
+provider's payload tagged with `"id":"claude"|"codex"`. Token sources
+(neither refreshed by the daemon — each CLI owns refreshing its own):
+- **Claude**: `_windows_credential_candidates()` — `claude_credentials_path`
+  config override → `CLAUDE_CREDENTIALS_PATH` → `CLAUDE_CONFIG_DIR` →
+  `~/.claude/.credentials.json` → `%LOCALAPPDATA%/Claude/` → `%APPDATA%/Claude/`.
+- **Codex**: `codex_auth_path()` — config override → `~/.codex/auth.json`.
+  Pure free-ride; Codex CLI owns refreshing its own token.
+
+A third provider, Antigravity CLI, was added and then removed
+2026-08-23 — see "Recent session highlights".
+
+Config file (chime/clock/credential-path overrides, editable via the tray's
+**Token Settings...** window — `settings_windows.py`, Tkinter):
+`%LOCALAPPDATA%\ClawdOnESP32\config`. Log: `%LOCALAPPDATA%\ClawdOnESP32\daemon.log`.
+
+**Install paths** (all end up registering the same HKCU autostart entry —
+`daemon/autostart_windows.py`, value name `ClawdOnESP32` — so the tray's
+"Start at login" toggle works regardless of which one was used):
+- `install.bat` / `uninstall.bat` — double-click wrappers around
+  `install-windows.ps1`, for a dev checkout. Falls back to the bundled
+  `runtime\python\` portable interpreter when no system Python is on PATH
+  (fully offline). `uninstall.bat` also force-stops any running instance
+  (`daemon/stop_daemon.ps1`, matched by full `tray_windows.py` path, not
+  just image name).
+- `dist/ClawdOnESP32Setup.exe` (built from `installer/clawd_on_esp32.iss`
+  via Inno Setup) — a real installer for someone who shouldn't need to know
+  this is a git repo: copies to `%LocalAppData%\Programs\ClawdOnESP32`,
+  shows up in **Settings → Apps** with a working uninstall, always uses the
+  bundled `runtime\python\` (never system Python). `PrepareToInstall` in the
+  `.iss` stops any running instance **before** copying files — a reinstall
+  over a live process silently dropped new files otherwise (real bug, see
+  commit `e3011b9`). Rebuild after any daemon code change:
+  `& "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" installer\clawd_on_esp32.iss`.
+- `runtime/python/` is a real embeddable-Python distribution with
+  bleak/httpx/pystray/Pillow/tkinter pre-installed into its own
+  site-packages (built with `PYTHONNOUSERSITE=1` so it can't accidentally
+  pick up packages from this machine's separate per-user site-packages —
+  bit us once). tkinter needed hand-copying in from a full Python install
+  (`_tkinter.pyd`, `tcl86t.dll`, `tk86t.dll`, `tcl/`, `Lib/tkinter/`, plus
+  `Lib` added to `python310._pth`) since the stock embeddable zip omits it
+  entirely — the Settings window is Tkinter-based and silently failed to
+  open before this was added.
+
+Test suite: `daemon/tests/` (pytest; pyserial/pytest aren't in
+`requirements-windows.txt` — install them ad hoc into `.venv` for local
+runs). `test_windows_reconnect.py::test_zombie_counter_resets_on_success_with_raised_limit`
+is a known-pre-existing failure unrelated to session work, not a regression.
+
+### macOS / Linux daemon — exists, not actively developed this session
+
+Bash daemon (`daemon/claude-usage-daemon.sh`) reads OAuth token, polls Anthropic API, sends JSON over BLE GATT. Run with `systemctl --user start claude-usage-daemon`. The unit file's `ExecStart` is the absolute path to the script — repoint it when switching between the worktree and the main checkout. `daemon/claude_usage_daemon.py` is the macOS (CoreBluetooth/bleak) port. Both were renamed (`DEVICE_NAME`) to match the new BLE name but are single-provider (Claude only) — the multi-provider/permission-gate/provider-visibility work this session was Windows-only.
 
 **Discovery & resilience:**
 
-- Connects by name (`"Clawdmeter"`) on first run, caches resolved MAC at `~/.config/claude-usage-monitor/ble-address`. ESP32 BLE addresses are factory-burned per-chip, so swapping any board invalidates the cache.
+- Connects by name (`"Clawd on ESP32"`) on first run, caches resolved MAC at `~/.config/claude-usage-monitor/ble-address`. ESP32 BLE addresses are factory-burned per-chip, so swapping any board invalidates the cache.
 - On connect failure: cache is dropped AND device is removed from bluez (`bluetoothctl remove`) so the next scan won't re-pick a dead MAC. Multi-candidate scans pick `head -1` and let the failure cycle converge.
 - `POLL_INTERVAL=60`, `TICK=5`. Inner loop wakes every 5s to detect disconnects fast; polls Anthropic when 60s elapsed OR when ESP fires a refresh request.
+
+### BLE wire protocol
 
 **GATT characteristics on service `4c41555a-...0001`:**
 
 - `...0002` RX — daemon writes JSON usage payload here.
 - `...0003` TX — firmware notifies ack/nack (daemon doesn't subscribe).
 - `...0004` REQ — firmware fires `0x01` notify in `onSubscribe` if `has_received_data` is false. Daemon subscribes via `setsid bash -c "stdbuf -oL dbus-monitor … | awk …"`; awk drops a flag file the inner loop picks up. See the `feedback_dbus_monitor_pipe` memory for the three subtle gotchas (pipe buffering, busctl-exits race, `wait` blocking on pipeline jobs).
+- `...0005` PERM_RESP — firmware-initiated permission decision (see "Permission gate" below). Windows daemon subscribes via `bleak`'s `start_notify`, same pattern as REQ but carrying JSON instead of a single byte.
+
+### Permission gate (Windows daemon only)
+
+Lets Claude Code / Codex CLI show a pending tool-call
+approval on the device and gate on its Allow/Deny — racing a `y`/`n`
+keypress in the same terminal, whichever answers first wins. RX carries a
+new tagged payload
+(`{"type":"perm","id":...,"rid":...,"tool":...,"desc":...,"ttl":...}` /
+`{"type":"perm_cancel","rid":...}`, both distinguished from the default
+usage-payload shape by the `type` field so old daemons/firmware are
+unaffected); PERM_RESP carries the device's `{"rid":...,"decision":"allow"|"deny"}`
+back. The daemon relays via a flat-file broker
+(`%LOCALAPPDATA%\ClawdOnESP32\perm_requests\<rid>.{request,result}.json` —
+`permission_broker_tick()` / `drain_requests_as_timeout()` in
+`claude_usage_daemon_windows.py`) so each CLI's hook script
+(`daemon/hooks/*_permission_hook.py`) can be a small standalone process that
+never imports the daemon. **Nothing here is auto-wired into any CLI's live
+config** — see `daemon/hooks/README.md` for opt-in, project-scoped setup.
+Firmware side: `ui_show_permission_request()` / modal in `ui.cpp`, a
+`permtest` serial command to trigger it without a real daemon/hook in the
+loop. A timeout must never silently ALLOW (falls through to the CLI's own
+prompt where that CLI has a neutral pass-through value, denies otherwise).
+
+### Provider visibility (Windows daemon only)
+
+A user who's only logged into one of the two CLIs doesn't see the other
+as a permanently-empty carousel tab. RX also carries `{"type":"providers","claude":bool,"codex":bool}`,
+sent whenever `_providers_enabled_now()`'s file-existence check
+(`claude_usage_daemon_windows.py`) changes — structural presence of a
+credentials file, not "currently valid," so an expired-but-present token
+still counts as enabled. Firmware: `ui_set_providers_enabled()` in `ui.cpp`
+gates `provider_tap_cb`'s carousel via `next_enabled_provider()`; if the
+active tab itself gets disabled it jumps forward immediately. Defaults both
+enabled until the first such message arrives, so older daemons that
+never send one see unchanged (cycle-all) behavior. Serial test commands:
+`provtest_claude_off`, `provtest_codex_off`, `provtest_reset`.

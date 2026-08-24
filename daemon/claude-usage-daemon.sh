@@ -1,10 +1,10 @@
 #!/bin/bash
 # Claude Usage Tracker Daemon (BLE)
 # Reads Claude Code OAuth token, polls usage via API, sends to ESP32 over BLE GATT.
-# Auto-connects and reconnects to the Clawdmeter BLE device.
+# Auto-connects and reconnects to the Clawd on ESP32 BLE device.
 # Dependencies: curl, awk, bluetoothctl
 
-DEVICE_NAME="Clawdmeter"
+DEVICE_NAME="Clawd on ESP32"
 DEVICE_MAC="${DEVICE_MAC:-}"  # auto-discovered if empty
 SERVICE_UUID="4c41555a-4465-7669-6365-000000000001"
 RX_CHAR_UUID="4c41555a-4465-7669-6365-000000000002"
@@ -146,7 +146,7 @@ save_mac() {
     echo "$DEVICE_MAC" > "$SAVED_MAC_FILE"
 }
 
-# Find a Clawdmeter the system already knows about — paired first, then merely
+# Find a Clawd on ESP32 the system already knows about — paired first, then merely
 # connected — WITHOUT an LE advertising scan. bluez only lists devices this host
 # has bonded/connected to, so we can't accidentally grab a stranger's advertising
 # unit. The device is a bonded BLE HID keyboard you pair once anyway, so we never

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Windows system-tray entry and state bridge for Clawdmeter — APP-01.
+"""Windows system-tray entry and state bridge for Clawd on ESP32 — APP-01.
 
 Provides:
   TrayState   — thread-safe scalar bridge (daemon loop writes, tray reads)
@@ -116,7 +116,7 @@ def header_text(ts: TrayState) -> str:
 # autostart (HKCU\Run pythonw) and an ARSO-restored console instance live in the
 # same session, so this name catches the duplicate-launch collision that produced
 # the "mystery console window fighting the headless tray over BLE" field bug.
-_SINGLETON_MUTEX_NAME = "Local\\Clawdmeter-tray-singleton"
+_SINGLETON_MUTEX_NAME = "Local\\ClawdOnESP32-tray-singleton"
 _ERROR_ALREADY_EXISTS = 183
 
 
@@ -124,7 +124,7 @@ def _acquire_single_instance():
     """Acquire the process-wide single-instance lock.
 
     Returns a truthy handle to keep alive for the process lifetime if this is
-    the first/only tray, or None if another Clawdmeter tray already owns the
+    the first/only tray, or None if another Clawd on ESP32 tray already owns the
     lock (the caller must then exit immediately, before touching BLE).
 
     Uses a named kernel mutex: Windows releases it automatically when the owning
@@ -188,7 +188,7 @@ def main() -> None:
     images = build_state_icons(base)
 
     ts = TrayState()
-    icon = pystray.Icon("Clawdmeter", images["scanning"], "Clawdmeter")
+    icon = pystray.Icon("ClawdOnESP32", images["scanning"], "Clawd on ESP32")
 
     # Set by the Quit handler so the supervisor below knows a clean stop was
     # requested and must NOT resurrect the loop.
@@ -245,6 +245,20 @@ def main() -> None:
             daemon_thread.join(timeout=6.0)
         icon_ref.stop()
 
+    def _on_settings(_icon_ref, _item) -> None:
+        # Standalone subprocess, not an in-process Toplevel: Tkinter's mainloop
+        # and pystray's own event loop both want to own their thread, so a
+        # separate process sidesteps that fight (see settings_windows.py docstring).
+        # Base pythonw.exe — same rationale as autostart._command (venv pythonw
+        # is a redirector stub that pops a console window).
+        import subprocess
+        pythonw = os.path.join(sys.base_exec_prefix, "pythonw.exe")
+        script = os.path.join(_REPO_ROOT, "daemon", "settings_windows.py")
+        try:
+            subprocess.Popen([pythonw, script], cwd=_REPO_ROOT)
+        except OSError as e:
+            daemon_log(f"Failed to open settings window: {e}")
+
     def _on_toggle(_icon_ref, _item) -> None:
         if autostart.is_enabled():
             autostart.disable()
@@ -258,6 +272,7 @@ def main() -> None:
     icon.menu = Menu(
         # Non-clickable status header; text updates via update_menu() on state change.
         MenuItem(lambda _item: header_text(ts), None, enabled=False),
+        MenuItem("Token Settings...", _on_settings),
         # Start-at-login toggle: checked= is a CALLABLE for live query (Pitfall 6).
         MenuItem("Start at login", _on_toggle, checked=lambda _item: autostart.is_enabled()),
         MenuItem("Quit", _on_quit),
@@ -283,7 +298,7 @@ def main() -> None:
                 _icon.title = header_text(ts)
                 # D-04: toast ONLY on transition INTO error, not on every error tick.
                 if current == "error" and prev_state["state"] != "error":
-                    _icon.notify(ts.reason or "Clawdmeter error", "Clawdmeter")
+                    _icon.notify(ts.reason or "Clawd on ESP32 error", "Clawd on ESP32")
                 prev_state["state"] = current
                 prev_state["last_sync"] = last_sync
                 _icon.update_menu()

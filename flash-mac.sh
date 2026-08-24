@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build and flash Clawdmeter firmware on macOS.
+# Build and flash Clawd on ESP32 firmware on macOS.
 # Usage:
 #   ./flash-mac.sh <board>                       # auto-detect /dev/cu.usbmodem*
 #   ./flash-mac.sh <board> /dev/cu.usbmodem1101  # explicit USB serial port
@@ -33,7 +33,7 @@ if ! command -v pio >/dev/null; then
     exit 1
 fi
 
-echo "=== Flashing Clawdmeter ==="
+echo "=== Flashing Clawd on ESP32 ==="
 echo "Board: $BOARD"
 echo "Port:  $PORT"
 echo ""

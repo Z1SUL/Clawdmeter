@@ -1,7 +1,8 @@
-# install-windows.ps1 - Clawdmeter Windows turnkey bootstrap (D-09)
+# install-windows.ps1 - Clawd on ESP32 Windows turnkey bootstrap (D-09)
 #
-# Creates a Python virtual environment, installs dependencies from
-# daemon\requirements-windows.txt, registers the tray app to launch at login
+# Gets a working Python (system Python if found -> venv + pip install; else
+# the in-repo portable runtime at runtime\python\, which already has every
+# dependency baked in), registers the tray app to launch at login
 # (HKCU\...\Run, no admin required), and starts the tray app immediately.
 #
 # Usage:
@@ -11,10 +12,12 @@
 #   .\install-windows.ps1
 #
 # To disable autostart later: right-click the tray icon -> uncheck "Start at login"
-# Or remove manually: reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v Clawdmeter /f
+# Or remove manually: reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v ClawdOnESP32 /f
 #
 # Security: this script downloads nothing from the internet. It installs only
-# the packages listed in the in-repo daemon\requirements-windows.txt.
+# the packages listed in the in-repo daemon\requirements-windows.txt (system-
+# Python path), or uses the already-populated in-repo runtime\python\ folder
+# (no-system-Python path) - either way nothing is fetched at install time.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -30,7 +33,7 @@ if (-not $RepoRoot) {
     $RepoRoot = (Get-Location).Path
 }
 
-Log "=== Clawdmeter Windows Install ==="
+Log "=== Clawd on ESP32 Windows Install ==="
 Log "Repository root: $RepoRoot"
 
 # ------------------------------------------------------------------
@@ -45,43 +48,66 @@ if ($RepoRoot -match '\\\\wsl(\$|\.localhost)\\') {
 Refusing to install from a WSL path:
   $RepoRoot
 
-The Clawdmeter daemon must be WSL-independent. Installing from the WSL share
+The Clawd on ESP32 daemon must be WSL-independent. Installing from the WSL share
 would make the virtual environment and login-autostart entry point at a path
 that is unreachable once WSL shuts down.
 
 Fix: copy this repository to a native Windows location and run the installer
 there, e.g.
 
-  Copy-Item -Recurse '$RepoRoot' "$env:USERPROFILE\Clawdmeter"
-  cd "$env:USERPROFILE\Clawdmeter"
+  Copy-Item -Recurse '$RepoRoot' "$env:USERPROFILE\ClawdOnESP32"
+  cd "$env:USERPROFILE\ClawdOnESP32"
   powershell -ExecutionPolicy Bypass -File install-windows.ps1
 "@
 }
 
 # ------------------------------------------------------------------
-# Step 1: Create virtual environment
+# Step 1+2: Get a working Python.
 # ------------------------------------------------------------------
-$VenvDir = Join-Path $RepoRoot ".venv"
-if (Test-Path $VenvDir) {
-    Log "Virtual environment already exists at .venv - skipping creation"
+# Prefer the system interpreter when present - unchanged venv + pip install
+# behavior, so existing installs and dev machines with Python already on
+# PATH are unaffected. Falls back to the in-repo portable runtime
+# (runtime\python\) when no system Python is found: that folder ships with
+# bleak/httpx/pystray/Pillow already installed into its own site-packages
+# (built the same way this venv step would, just done once ahead of time),
+# so a brand-new machine with nothing installed still works with zero
+# internet access and no separate Python setup step.
+$SystemPython = Get-Command python -ErrorAction SilentlyContinue
+if ($SystemPython) {
+    Log "System Python found: $($SystemPython.Source)"
+
+    $VenvDir = Join-Path $RepoRoot ".venv"
+    if (Test-Path $VenvDir) {
+        Log "Virtual environment already exists at .venv - skipping creation"
+    } else {
+        Log "Creating virtual environment at .venv ..."
+        & python -m venv $VenvDir
+        if ($LASTEXITCODE -ne 0) { throw "Failed to create virtual environment (exit $LASTEXITCODE)" }
+        Log "Virtual environment created"
+    }
+
+    $PythonExe = Join-Path $VenvDir "Scripts\python.exe"
+    $RequirementsFile = Join-Path $RepoRoot "daemon\requirements-windows.txt"
+    Log "Installing dependencies from daemon\requirements-windows.txt ..."
+    & $PythonExe -m pip install --quiet -r $RequirementsFile
+    if ($LASTEXITCODE -ne 0) { throw "pip install failed (exit $LASTEXITCODE)" }
+    Log "Dependencies installed"
 } else {
-    Log "Creating virtual environment at .venv ..."
-    & python -m venv $VenvDir
-    if ($LASTEXITCODE -ne 0) { throw "Failed to create virtual environment (exit $LASTEXITCODE)" }
-    Log "Virtual environment created"
+    $BundledPython = Join-Path $RepoRoot "runtime\python\python.exe"
+    if (-not (Test-Path $BundledPython)) {
+        throw @"
+No Python found on PATH, and no bundled runtime at runtime\python\ either.
+
+Install Python 3.11+ from https://www.python.org/downloads/ (check "Add
+python.exe to PATH" during setup) and run this installer again - or make
+sure you got this repository as a release/copy that includes the
+runtime\python\ folder.
+"@
+    }
+    Log "No system Python on PATH - using the bundled portable runtime at runtime\python\"
+    Log "(it already has bleak/httpx/pystray/Pillow installed - nothing to download or create)"
+    $PythonExe = $BundledPython
 }
-
-# ------------------------------------------------------------------
-# Step 2: Install dependencies
-# ------------------------------------------------------------------
-$PythonExe  = Join-Path $VenvDir "Scripts\python.exe"
-$PythonwExe = Join-Path $VenvDir "Scripts\pythonw.exe"
-$RequirementsFile = Join-Path $RepoRoot "daemon\requirements-windows.txt"
-
-Log "Installing dependencies from daemon\requirements-windows.txt ..."
-& $PythonExe -m pip install --quiet -r $RequirementsFile
-if ($LASTEXITCODE -ne 0) { throw "pip install failed (exit $LASTEXITCODE)" }
-Log "Dependencies installed"
 
 # ------------------------------------------------------------------
 # Step 3: Register autostart (HKCU\Run, per-user, no admin needed)
@@ -101,7 +127,7 @@ import daemon.autostart_windows as a
 a.enable(tray_script=r'$TrayScript')
 "@
 if ($LASTEXITCODE -ne 0) { throw "Autostart registration failed (exit $LASTEXITCODE)" }
-Log "Autostart registered - Clawdmeter will launch automatically at next logon"
+Log "Autostart registered - Clawd on ESP32 will launch automatically at next logon"
 
 # ------------------------------------------------------------------
 # Step 4: Launch the tray app (headless - BASE pythonw.exe, no console window)
@@ -111,6 +137,8 @@ Log "Autostart registered - Clawdmeter will launch automatically at next logon"
 # build as a child (a CPython venv-launcher bug), popping a black console window.
 # tray_windows.py adds the venv site-packages to sys.path itself, so the venv's
 # dependencies still resolve. (See autostart_windows._command - same rationale.)
+# This also just works for the bundled-runtime path above: runtime\python\ isn't
+# a venv, so sys.base_exec_prefix there resolves to itself.
 $BasePrefix  = & $PythonExe -c "import sys; print(sys.base_exec_prefix)"
 $BasePythonw = Join-Path $BasePrefix "pythonw.exe"
 
@@ -121,5 +149,5 @@ $StartArgs = @{
     WorkingDirectory = $RepoRoot
 }
 Start-Process @StartArgs
-Log "Tray app started - look for the Clawdmeter icon in your notification area"
+Log "Tray app started - look for the Clawd on ESP32 icon in your notification area"
 Log "=== Install complete ==="

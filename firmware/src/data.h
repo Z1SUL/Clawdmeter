@@ -1,6 +1,22 @@
 #pragma once
 #include <Arduino.h>
 
+// Which coding-assistant CLI a usage payload belongs to. Absent "id" in the
+// wire payload means PROVIDER_CLAUDE (pre-multi-provider daemons keep working
+// unmodified).
+enum provider_id_t {
+    PROVIDER_CLAUDE = 0,
+    PROVIDER_CODEX,
+    PROVIDER_COUNT,
+};
+
+static inline const char* provider_display_name(provider_id_t id) {
+    switch (id) {
+        case PROVIDER_CODEX: return "Codex";
+        default:              return "Claude";
+    }
+}
+
 struct UsageData {
     float session_pct;       // utilization 0-100 (5h window Pro/Max; spending % Enterprise)
     int session_reset_mins;  // minutes until reset
@@ -17,3 +33,7 @@ struct UsageData {
     bool ok;                 // data parse succeeded
     bool valid;              // false until first successful parse
 };
+
+// One slot per provider; identical shape to UsageData so any provider's
+// payload can land in any slot untouched.
+typedef UsageData provider_state_t;

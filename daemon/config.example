@@ -1,8 +1,8 @@
-# Clawdmeter daemon config
+# Clawd on ESP32 daemon config
 #
 # Copy this file to:
 #   macOS / Linux : ~/.config/claude-usage-monitor/config
-#   Windows       : %LOCALAPPDATA%\Clawdmeter\config
+#   Windows       : %LOCALAPPDATA%\ClawdOnESP32\config
 #
 # The daemon re-reads it on every poll, so edits take effect within ~60s — no restart needed.
 

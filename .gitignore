@@ -15,6 +15,10 @@ tools/package-lock.json
 # Mac daemon venv
 daemon/.venv/
 
+# Windows daemon dev venv (not the portable runtime/python/ bundle - that IS
+# meant to be committed, this is just local dev convenience)
+/.venv/
+
 # Python bytecode cache
 __pycache__/
 *.pyc
