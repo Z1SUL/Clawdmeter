@@ -266,6 +266,37 @@ See `~/.claude/projects/.../memory/` files for persistent context (user is an em
 
 ## Recent session highlights
 
+- **Claude Desktop confirmed not a viable credential fallback; dead fallback
+  paths removed (2026-08-24).** Diagnosed a report of Claude usage going
+  "no data" on the device: root cause was a genuine, temporary Claude OAuth
+  token expiry (daemon never refreshes Claude's own token — pure free-ride,
+  same as Codex — only whatever refreshes `~/.claude/.credentials.json`,
+  i.e. actually running the `claude` CLI in a terminal, fixes it; it
+  self-resolved once the CLI was used again). That raised the follow-up
+  question of whether running Claude Desktop in the background could serve
+  as a fallback token source. Investigated on-disk: this machine's Claude
+  Desktop is Store-installed (MSIX/AppContainer), so `%APPDATA%\Claude`
+  redirects to `%LOCALAPPDATA%\Packages\Claude_<id>\LocalCache\Roaming\Claude\`
+  and Desktop never writes a plain `.credentials.json` to either the old
+  `%LOCALAPPDATA%\Claude\` or `%APPDATA%\Claude\` fallback paths the daemon
+  used to probe — its own account auth is a web session (cookies/Local
+  Storage in that same Chromium profile), not this OAuth file. Desktop's
+  "Cowork"/local-agent-mode feature does spin up isolated Claude Code CLI
+  instances with their own `.claude/.credentials.json`, but each lives
+  under a per-session UUID path inside the sandbox and is a one-off
+  snapshot (found one over two weeks stale) — not a stable fallback either.
+  Net effect: the daemon's `%LOCALAPPDATA%\Claude\`/`%APPDATA%\Claude\`
+  fallback probes never fired on a Store-installed Desktop and were
+  removed from `_windows_credential_candidates()` in
+  `daemon/claude_usage_daemon_windows.py` (now just the config/env
+  overrides + the one real `~/.claude/.credentials.json` path), with the
+  investigation recorded in that function's docstring and in
+  `daemon/README-windows.md`. Reviving a Desktop-based fallback would mean
+  the same cookie-scraping approach `trafficmonitor-ai-usage-plugin` uses
+  against claude.ai's web session (see its `helper/claude-web-helper/`) —
+  not attempted here, tradeoffs (extra browser-profile management, reliance
+  on an undocumented internal web API) judged not worth it over just
+  waiting for the next real CLI use.
 - **Antigravity CLI provider removed (2026-08-23).** An Antigravity CLI
   update moved its OAuth token from the plain `~/.gemini/oauth_creds.json`
   file to Windows Credential Manager, breaking the daemon's free-ride read;

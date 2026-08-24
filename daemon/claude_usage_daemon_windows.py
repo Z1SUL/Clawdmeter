@@ -709,7 +709,21 @@ def _windows_credential_candidates() -> list[Path]:
     0. claude_credentials_path config-file override (Settings window)
     1. CLAUDE_CREDENTIALS_PATH env override (D-03, project-specific)
     2. CLAUDE_CONFIG_DIR env override (official Claude override)
-    3. D-02 candidate list: home/.claude, LOCALAPPDATA/Claude, APPDATA/Claude
+    3. home/.claude/.credentials.json — the only real candidate (see below)
+
+    D-02 originally also probed %LOCALAPPDATA%/Claude/.credentials.json and
+    %APPDATA%/Claude/.credentials.json as guessed fallbacks for Claude
+    Desktop. Investigated 2026-08-24 and confirmed dead: a Store-installed
+    (MSIX) Desktop redirects %APPDATA%/Claude to
+    %LOCALAPPDATA%/Packages/Claude_<id>/LocalCache/Roaming/Claude/ and never
+    writes a plain .credentials.json there — its own auth is a web session,
+    not this OAuth file. Desktop's "Cowork"/local-agent-mode feature *does*
+    spin up isolated Claude Code CLI instances with their own
+    .claude/.credentials.json, but those live under a per-session UUID path
+    inside that AppContainer sandbox and are one-off snapshots, not
+    continuously refreshed — unusable as a stable fallback. Removed rather
+    than left in as dead paths that never fire. See CLAUDE.md "Recent
+    session highlights" for the full investigation.
     """
     # Priority 0: explicit path set via the Settings window
     if override := _config_value("claude_credentials_path"):
@@ -720,15 +734,8 @@ def _windows_credential_candidates() -> list[Path]:
     # Priority 2: official CLAUDE_CONFIG_DIR env override
     if config_dir := os.environ.get("CLAUDE_CONFIG_DIR"):
         return [Path(config_dir) / ".credentials.json"]
-    # Priority 3: D-02 candidate list — first hit wins
-    home = Path.home()
-    local_appdata = Path(os.environ.get("LOCALAPPDATA", home / "AppData" / "Local"))
-    appdata = Path(os.environ.get("APPDATA", home / "AppData" / "Roaming"))
-    return [
-        home / ".claude" / ".credentials.json",          # primary (confirmed by docs)
-        local_appdata / "Claude" / ".credentials.json",  # fallback 2
-        appdata / "Claude" / ".credentials.json",        # fallback 3
-    ]
+    # Priority 3: the one real path (confirmed by Claude Code docs)
+    return [Path.home() / ".claude" / ".credentials.json"]
 
 
 def claude_credentials_default() -> Path:

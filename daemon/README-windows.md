@@ -18,14 +18,18 @@ the manual-run fallback, and how to manage or remove autostart.
 
 ### Where are my credentials?
 
-`claude login` writes the OAuth token to (first match wins):
+`claude login` writes the OAuth token to `%USERPROFILE%\.claude\.credentials.json`
+(confirmed by Claude Code docs) — that's the only path the daemon reads. You can also set
+`CLAUDE_CREDENTIALS_PATH` to an absolute path or `CLAUDE_CONFIG_DIR` to a directory to
+override it.
 
-1. `%USERPROFILE%\.claude\.credentials.json` — primary path (confirmed by Claude Code docs)
-2. `%LOCALAPPDATA%\Claude\.credentials.json` — fallback
-3. `%APPDATA%\Claude\.credentials.json` — fallback
-
-The daemon probes these paths in order. You can also set `CLAUDE_CREDENTIALS_PATH` to an
-absolute path or `CLAUDE_CONFIG_DIR` to a directory to override the search entirely.
+This file is refreshed only when you actually run the `claude` CLI in a terminal — not by
+having Claude Desktop open. An earlier version of the daemon also probed
+`%LOCALAPPDATA%\Claude\.credentials.json` and `%APPDATA%\Claude\.credentials.json` as guessed
+fallbacks for Desktop; investigated and removed 2026-08-24 — a Store-installed (MSIX) Desktop
+never writes a plain `.credentials.json` to either path (its own auth is a web session, in an
+AppContainer-redirected folder), so those fallbacks never fired. See CLAUDE.md "Recent session
+highlights" for the full writeup.
 
 > **Security note:** The credentials file contains your OAuth token. Never share its contents
 > or embed it in scripts. The daemon reads it from disk and uses it only as the API
@@ -270,8 +274,8 @@ reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v ClawdOnESP32 
 
 ### WSL independence
 
-The daemon operates fully independently of WSL. The token is read from native Windows
-credential paths (`%USERPROFILE%\.claude\.credentials.json` and fallbacks); BLE uses
+The daemon operates fully independently of WSL. The token is read from the native Windows
+credential path (`%USERPROFILE%\.claude\.credentials.json`); BLE uses
 the WinRT stack directly. Running `wsl --shutdown` does not affect the BLE link, and
 the daemon starts correctly even in a fresh Windows session where WSL has never been
 launched.
